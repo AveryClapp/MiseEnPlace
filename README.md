@@ -53,7 +53,16 @@ mep search "garlic confit"                           # full-text search
 mep list                                             # browse, newest first
 mep list --tag italian --limit 20                    # filter by tag
 mep show 42                                           # full recipe
+
+mep plan 42                                          # AI cooking timeline (experimental)
+mep cook 42                                          # step-by-step walkthrough (experimental)
 ```
+
+`plan` makes one Claude call to reorder a recipe's steps into an efficient
+timeline (hands-on vs hands-off time, what to prep during waits) and caches it.
+`cook` walks that timeline one step at a time with a live pacing timer; you
+press Enter to advance. Re-run `plan --regenerate` to rebuild. Both are
+experimental: the timings are AI estimates.
 
 Channel ingestion is idempotent: videos already stored are skipped, so you can
 re-run it to pick up only what's new. Non-recipe videos and videos without

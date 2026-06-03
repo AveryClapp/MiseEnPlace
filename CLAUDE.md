@@ -16,14 +16,16 @@ tool-version manager). The Python package, config dir, and DB stay named `mise`.
 
 ```
 mise/
-  cli.py         Click commands (init, add, search, show, list) + error boundary
+  cli.py         Click commands (init, add, search, show, list, plan, cook)
   config.py      ~/.mise paths, config load/validate, extraction model id
   errors.py      MiseError — user-fixable problems, caught in cli.main()
-  db.py          Schema, inserts, FTS5 search, read queries
+  db.py          Schema, inserts, FTS5 search, plan storage, read queries
   transcript.py  URL -> video_id, transcript fetch (None if unavailable)
   extract.py     Transcript -> Claude -> parsed recipe dict
   youtube.py     oEmbed metadata (keyless) + Data API channel walk
   ingest.py      Orchestration: ingest_one / add_video / add_channel
+  plan.py        Recipe -> Claude -> cooking timeline (experimental)
+  cook.py        Live step-by-step walkthrough + pure timer helpers
 tests/           Offline unit tests (no network, no keys)
 docs/plans/      Design doc
 ```
@@ -49,6 +51,13 @@ docs/plans/      Design doc
   working without a YouTube key.
 - **Throttle:** 0.5s between transcript fetches during channel ingest. Don't
   remove it — it avoids rate limiting.
+- **Config never hard-fails on load.** `load_config` returns whatever keys are
+  available; `require()` enforces a specific key only when an operation actually
+  needs it. So cached `plan`/`cook`, plus `search`/`list`/`show`, work with no
+  keys at all. Don't reintroduce a global "no config" error.
+- **Plans are cached** in `plan_steps` (one ordered set per recipe). `plan`
+  generates on first use, reuses after; `plan --regenerate` and `save_plan`
+  overwrite cleanly. `cook` never calls Claude if a plan already exists.
 
 ## Extraction
 
