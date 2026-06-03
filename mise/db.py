@@ -4,9 +4,17 @@ No ORM. Connections set row_factory to sqlite3.Row so callers get dict-like
 rows, and enable foreign keys so deleting a recipe cascades to its children.
 """
 
+import json
 import sqlite3
 
 from .config import DB_PATH
+
+# Columns added after the first release; backfilled onto existing databases.
+_PLAN_COLUMNS = {
+    "ingredients_json": "TEXT",
+    "equipment_json": "TEXT",
+    "timer_label": "TEXT",
+}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS recipes (
@@ -53,7 +61,10 @@ CREATE TABLE IF NOT EXISTS plan_steps (
     instruction      TEXT,
     duration_minutes REAL,
     mode             TEXT,
-    overlap_hint     TEXT
+    overlap_hint     TEXT,
+    ingredients_json TEXT,
+    equipment_json   TEXT,
+    timer_label      TEXT
 );
 
 -- Contentless FTS index keyed by rowid = recipes.id.
@@ -75,9 +86,18 @@ def init_db() -> None:
     conn = connect()
     try:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after a database was first created."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(plan_steps)")}
+    for name, decl in _PLAN_COLUMNS.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE plan_steps ADD COLUMN {name} {decl}")
 
 
 def video_exists(conn: sqlite3.Connection, video_id: str) -> bool:
@@ -216,8 +236,9 @@ def save_plan(conn: sqlite3.Connection, recipe_id: int, tasks: list[dict]) -> No
         conn.execute("DELETE FROM plan_steps WHERE recipe_id = ?", (recipe_id,))
         conn.executemany(
             "INSERT INTO plan_steps"
-            " (recipe_id, position, instruction, duration_minutes, mode, overlap_hint)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            " (recipe_id, position, instruction, duration_minutes, mode,"
+            "  overlap_hint, ingredients_json, equipment_json, timer_label)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     recipe_id,
@@ -226,6 +247,9 @@ def save_plan(conn: sqlite3.Connection, recipe_id: int, tasks: list[dict]) -> No
                     task.get("duration_minutes"),
                     task.get("mode") or "active",
                     task.get("overlap_hint"),
+                    json.dumps(task.get("ingredients") or []),
+                    json.dumps(task.get("equipment") or []),
+                    task.get("timer_label"),
                 )
                 for i, task in enumerate(tasks)
             ],
@@ -235,11 +259,23 @@ def save_plan(conn: sqlite3.Connection, recipe_id: int, tasks: list[dict]) -> No
 def get_plan(conn: sqlite3.Connection, recipe_id: int) -> list[dict]:
     """Return the cached plan tasks in order, or [] if none."""
     rows = conn.execute(
-        "SELECT instruction, duration_minutes, mode, overlap_hint"
+        "SELECT instruction, duration_minutes, mode, overlap_hint,"
+        " ingredients_json, equipment_json, timer_label"
         " FROM plan_steps WHERE recipe_id = ? ORDER BY position",
         (recipe_id,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [
+        {
+            "instruction": r["instruction"],
+            "duration_minutes": r["duration_minutes"],
+            "mode": r["mode"],
+            "overlap_hint": r["overlap_hint"],
+            "ingredients": json.loads(r["ingredients_json"] or "[]"),
+            "equipment": json.loads(r["equipment_json"] or "[]"),
+            "timer_label": r["timer_label"],
+        }
+        for r in rows
+    ]
 
 
 def list_recipes(
