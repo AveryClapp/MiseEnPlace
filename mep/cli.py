@@ -22,7 +22,7 @@ from .plan import generate_plan
 
 
 @click.group()
-@click.version_option(package_name="mep")
+@click.version_option(package_name="mise-en-place")
 def cli():
     """mep — extract recipes from YouTube cooking videos."""
 
