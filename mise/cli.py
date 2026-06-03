@@ -4,8 +4,10 @@ import json
 
 import click
 
+from . import adapt as adapt_mod
 from . import cook as cook_mod
 from . import db, ingest, scale
+from .components import analyze_components
 from .config import CONFIG_PATH, DB_PATH, MISE_DIR, load_config, model, require
 from .errors import MiseError
 from .plan import generate_plan
@@ -115,12 +117,18 @@ def list_cmd(tag, limit):
 @cli.command()
 @click.argument("recipe_id", type=int)
 @click.option("--servings", type=int, default=None, help="Scale ingredients to N servings.")
-def show(recipe_id, servings):
-    """Display one recipe in full."""
+@click.option("--parts", is_flag=True, help="Show the recipe's component breakdown.")
+def show(recipe_id, servings, parts):
+    """Display one recipe in full, or its components with --parts."""
+    config = load_config()
+    db.init_db()
     conn = db.connect()
     data = db.get_recipe(conn, recipe_id)
     if data is None:
         raise MiseError(f"No recipe with id {recipe_id}.")
+    if parts:
+        _render_parts(data["recipe"], _ensure_components(conn, config, data))
+        return
     _render(data, servings)
 
 
@@ -144,7 +152,9 @@ def plan(recipe_id, regenerate, servings):
 @cli.command()
 @click.argument("recipe_id", type=int)
 @click.option("--servings", type=int, default=None, help="Scale ingredients to N servings.")
-def cook(recipe_id, servings):
+@click.option("--have", default=None, help="Parts you already have (comma-separated); adapts this cook only.")
+@click.option("--sub", "subs", multiple=True, help='Ingredient swap "x=y" (repeatable).')
+def cook(recipe_id, servings, have, subs):
     """Walk through a recipe's timeline step by step (experimental)."""
     config = load_config()
     db.init_db()
@@ -152,9 +162,61 @@ def cook(recipe_id, servings):
     data = db.get_recipe(conn, recipe_id)
     if data is None:
         raise MiseError(f"No recipe with id {recipe_id}.")
-    tasks = _ensure_plan(conn, config, data, regenerate=False)
+
+    have_list = _split_csv(have)
+    sub_map = _collect_subs(subs)
+    if have_list or sub_map:
+        # Adapt in memory for this cook only; the cached plan belongs to the
+        # original recipe, so generate a fresh (uncached) plan for the result.
+        key = require(config, "ANTHROPIC_API_KEY")
+        click.echo("Adapting for this cook...")
+        adapted = adapt_mod.adapt_recipe(
+            data, have=have_list, subs=sub_map, api_key=key, model=model(config)
+        )
+        data = _adapted_data(data, adapted)
+        if not data["steps"]:
+            raise MiseError("Nothing left to cook after adapting.")
+        click.echo("Generating cook plan...")
+        tasks = generate_plan(data, api_key=key, model=model(config))
+    else:
+        tasks = _ensure_plan(conn, config, data, regenerate=False)
+
     gather, note = _gather_lines(data, servings)
     cook_mod.run(data["recipe"], tasks, gather_lines=gather, scale_note=note)
+
+
+@cli.command()
+@click.argument("recipe_id", type=int)
+@click.option("--have", default=None, help="Parts you already have (comma-separated).")
+@click.option("--sub", "subs", multiple=True, help='Ingredient swap "x=y" (repeatable).')
+@click.option("-i", "--interactive", is_flag=True, help="Pick what you have from a list.")
+def adapt(recipe_id, have, subs, interactive):
+    """Rewrite a recipe around what you already have (experimental)."""
+    config = load_config()
+    db.init_db()
+    conn = db.connect()
+    data = db.get_recipe(conn, recipe_id)
+    if data is None:
+        raise MiseError(f"No recipe with id {recipe_id}.")
+
+    have_list = _split_csv(have)
+    sub_map = _collect_subs(subs)
+    if interactive or (not have_list and not sub_map):
+        have_list, sub_map = _interactive_pick(conn, config, data, have_list, sub_map)
+    if not have_list and not sub_map:
+        click.echo("Nothing to adapt.")
+        return
+
+    click.echo("Adapting...")
+    adapted = adapt_mod.adapt_recipe(
+        data,
+        have=have_list,
+        subs=sub_map,
+        api_key=require(config, "ANTHROPIC_API_KEY"),
+        model=model(config),
+    )
+    _preview_adapt(data, adapted, have_list, sub_map)
+    _save_adapted(conn, data, adapted)
 
 
 def _ensure_plan(conn, config, data, regenerate):
@@ -235,6 +297,158 @@ def _gather_lines(data: dict, target_servings):
 
 def _fmt_factor(factor: float) -> str:
     return f"{factor:.2f}".rstrip("0").rstrip(".")
+
+
+# --- adapt / components -------------------------------------------------------
+
+
+def _split_csv(value):
+    if not value:
+        return []
+    return [p.strip() for p in value.split(",") if p.strip()]
+
+
+def _collect_subs(subs):
+    """Merge one or more --sub values (each may itself be a comma list)."""
+    out = {}
+    for raw in subs:
+        out.update(adapt_mod.parse_subs(raw))
+    return out
+
+
+def _ensure_components(conn, config, data):
+    """Return the cached component breakdown, analyzing and caching if needed."""
+    comps = db.get_components(conn, data["recipe"]["id"])
+    if comps:
+        return comps
+    if not data["steps"]:
+        raise MiseError("This recipe has no steps to break down.")
+    click.echo("Analyzing components...")
+    comps = analyze_components(
+        data, api_key=require(config, "ANTHROPIC_API_KEY"), model=model(config)
+    )
+    db.save_components(conn, data["recipe"]["id"], comps)
+    return comps
+
+
+def _render_parts(recipe: dict, comps: list[dict]) -> None:
+    name = recipe["dish_name"] or recipe["title"] or "recipe"
+    click.echo()
+    click.secho(f"{name} — components", bold=True)
+    click.echo()
+    for i, c in enumerate(comps, start=1):
+        head = f"  {click.style(str(i), fg='cyan')}  " + click.style(c["name"], bold=True)
+        if c["purpose"]:
+            head += f"  {c['purpose']}"
+        click.echo(head)
+        if c["ingredients"]:
+            click.echo("       " + ", ".join(c["ingredients"]))
+        if c["make_steps"]:
+            steps = ", ".join(str(s) for s in c["make_steps"])
+            click.echo(f"       made in steps {steps}")
+        click.echo()
+
+
+def _preview_ingredients(ings: list[str]) -> str:
+    text = ", ".join(ings)
+    return text if len(text) <= 42 else text[:39] + "..."
+
+
+def _interactive_pick(conn, config, data, have_list, sub_map):
+    comps = _ensure_components(conn, config, data)
+    name = data["recipe"]["dish_name"] or data["recipe"]["title"] or "recipe"
+    click.echo()
+    click.secho(f"{name} — what do you already have?", bold=True)
+    click.echo()
+    for i, c in enumerate(comps, start=1):
+        n = len(c["make_steps"])
+        steps = f"{n} step" + ("" if n == 1 else "s")
+        num = click.style(f"{i}", fg="cyan")
+        click.echo(f"  {num}  {c['name']:<14} {_preview_ingredients(c['ingredients'])}  · {steps}")
+    click.echo()
+    picks = click.prompt(
+        "Have any already? numbers, e.g. 1,4  (Enter = none)", default="", show_default=False
+    )
+    for idx in adapt_mod.parse_selection(picks, len(comps)):
+        if comps[idx]["name"] not in have_list:
+            have_list.append(comps[idx]["name"])
+    swaps = click.prompt(
+        "Any swaps? ingredient=replacement  (Enter = none)", default="", show_default=False
+    )
+    sub_map.update(adapt_mod.parse_subs(swaps))
+    return have_list, sub_map
+
+
+def _preview_adapt(data, adapted, have_list, sub_map):
+    click.echo()
+    if have_list:
+        click.secho("  cut:   " + ", ".join(have_list), fg="red")
+    if sub_map:
+        swaps = ", ".join(f"{k} -> {v}" for k, v in sub_map.items())
+        click.secho("  swaps: " + swaps, fg="yellow")
+    old_i = len(data["ingredients"])
+    new_i = len([x for x in (adapted.get("ingredients") or []) if x.get("name")])
+    old_s = len(data["steps"])
+    new_s = len([x for x in (adapted.get("steps") or []) if x])
+    name = adapted.get("dish_name") or data["recipe"]["dish_name"] or "recipe"
+    click.secho(
+        f"  {name} (adapted)   {old_i} -> {new_i} ingredients · {old_s} -> {new_s} steps",
+        bold=True,
+    )
+    click.echo()
+
+
+def _save_adapted(conn, data, adapted):
+    choice = (
+        click.prompt("Save?  [c] copy   [o] overwrite   [d] discard", default="c")
+        .strip()
+        .lower()[:1]
+    )
+    if choice == "o":
+        db.replace_recipe_content(conn, data["recipe"]["id"], adapted)
+        click.echo(f"Overwrote recipe {data['recipe']['id']}.")
+    elif choice == "d":
+        click.echo("Discarded.")
+    else:
+        r = data["recipe"]
+        video_id = db.next_adapted_video_id(conn, r["video_id"])
+        title = (r["title"] or r["dish_name"] or "recipe") + " (adapted)"
+        new_id = db.insert_recipe(
+            conn,
+            video_id=video_id,
+            title=title,
+            channel=r["channel"],
+            url=r["url"],
+            raw_transcript=None,
+            extracted=adapted,
+        )
+        click.echo(f"Saved adapted copy as recipe {new_id}.")
+
+
+def _adapted_data(orig: dict, adapted: dict) -> dict:
+    """Build a db.get_recipe-shaped dict from an adapted recipe, reusing the
+    original's identity fields. In-memory only; nothing is written."""
+    recipe = dict(orig["recipe"])
+    for field in ("dish_name", "cook_time", "servings", "difficulty"):
+        if adapted.get(field) is not None:
+            recipe[field] = adapted.get(field)
+    ingredients = [
+        {
+            "name": ing.get("name"),
+            "quantity": ing.get("quantity"),
+            "unit": ing.get("unit"),
+            "prep": ing.get("prep"),
+        }
+        for ing in (adapted.get("ingredients") or [])
+        if ing.get("name")
+    ]
+    steps = [
+        {"step_number": i, "instruction": text}
+        for i, text in enumerate(adapted.get("steps") or [], start=1)
+        if text
+    ]
+    tags = [t for t in (adapted.get("tags") or []) if t]
+    return {"recipe": recipe, "ingredients": ingredients, "steps": steps, "tags": tags}
 
 
 def _render(data: dict, target_servings=None) -> None:
