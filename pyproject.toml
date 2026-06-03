@@ -1,0 +1,25 @@
+[project]
+name = "mise"
+version = "0.1.0"
+description = "Personal recipe aggregator: extract recipes from YouTube cooking videos with Claude."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.1",
+    "anthropic>=0.39",
+    "youtube-transcript-api>=0.6",
+    "google-api-python-client>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+mep = "mise.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["mise*"]
