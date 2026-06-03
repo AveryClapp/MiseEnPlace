@@ -15,6 +15,9 @@ _PLAN_COLUMNS = {
     "equipment_json": "TEXT",
     "timer_label": "TEXT",
 }
+_RECIPE_COLUMNS = {
+    "times_cooked": "INTEGER NOT NULL DEFAULT 0",
+}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS recipes (
@@ -28,7 +31,8 @@ CREATE TABLE IF NOT EXISTS recipes (
     servings       TEXT,
     difficulty     TEXT,
     raw_transcript TEXT,
-    created_at     TEXT DEFAULT (datetime('now'))
+    created_at     TEXT DEFAULT (datetime('now')),
+    times_cooked   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS ingredients (
@@ -105,10 +109,11 @@ def init_db() -> None:
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """Add columns introduced after a database was first created."""
-    existing = {row["name"] for row in conn.execute("PRAGMA table_info(plan_steps)")}
-    for name, decl in _PLAN_COLUMNS.items():
-        if name not in existing:
-            conn.execute(f"ALTER TABLE plan_steps ADD COLUMN {name} {decl}")
+    for table, columns in (("plan_steps", _PLAN_COLUMNS), ("recipes", _RECIPE_COLUMNS)):
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, decl in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 def video_exists(conn: sqlite3.Connection, video_id: str) -> bool:
@@ -116,6 +121,19 @@ def video_exists(conn: sqlite3.Connection, video_id: str) -> bool:
         "SELECT 1 FROM recipes WHERE video_id = ?", (video_id,)
     ).fetchone()
     return row is not None
+
+
+def increment_cook_count(conn: sqlite3.Connection, recipe_id: int) -> int:
+    """Bump a recipe's cooked counter by one and return the new total."""
+    with conn:
+        conn.execute(
+            "UPDATE recipes SET times_cooked = times_cooked + 1 WHERE id = ?",
+            (recipe_id,),
+        )
+    row = conn.execute(
+        "SELECT times_cooked FROM recipes WHERE id = ?", (recipe_id,)
+    ).fetchone()
+    return row["times_cooked"] if row else 0
 
 
 def insert_recipe(

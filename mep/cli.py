@@ -191,6 +191,8 @@ def cook(recipe_id, servings, have, subs):
 
     gather, note = _gather_lines(data, servings)
     cook_mod.run(data["recipe"], tasks, gather_lines=gather, scale_note=note)
+    total = db.increment_cook_count(conn, recipe_id)
+    click.secho(f"Cooked {total}x total.", fg="green")
 
 
 @cli.command()
@@ -471,6 +473,8 @@ def _render(data: dict, target_servings=None) -> None:
     for field in ("cook_time", "servings", "difficulty"):
         if r[field]:
             meta.append(f"{field.replace('_', ' ')}: {r[field]}")
+    if r["times_cooked"]:
+        meta.append(f"cooked {r['times_cooked']}x")
     if meta:
         click.echo("  " + "  |  ".join(meta))
     if r["url"]:

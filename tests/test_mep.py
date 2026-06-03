@@ -96,6 +96,16 @@ def test_db_roundtrip_and_search():
     assert any(r["id"] == rid for r in db.list_recipes(conn, tag="italian"))
 
 
+def test_increment_cook_count():
+    db.init_db()
+    conn = db.connect()
+    rid = _seed_recipe(conn, "cookcount01")
+    assert db.get_recipe(conn, rid)["recipe"]["times_cooked"] == 0
+    assert db.increment_cook_count(conn, rid) == 1
+    assert db.increment_cook_count(conn, rid) == 2
+    assert db.get_recipe(conn, rid)["recipe"]["times_cooked"] == 2
+
+
 def test_non_recipe_stub_stores_cleanly():
     db.init_db()
     conn = db.connect()
