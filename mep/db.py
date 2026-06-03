@@ -123,6 +123,14 @@ def video_exists(conn: sqlite3.Connection, video_id: str) -> bool:
     return row is not None
 
 
+def set_servings(conn: sqlite3.Connection, recipe_id: int, servings: str) -> None:
+    """Record a recipe's serving count, stored verbatim like any other field."""
+    with conn:
+        conn.execute(
+            "UPDATE recipes SET servings = ? WHERE id = ?", (servings, recipe_id)
+        )
+
+
 def increment_cook_count(conn: sqlite3.Connection, recipe_id: int) -> int:
     """Bump a recipe's cooked counter by one and return the new total."""
     with conn:

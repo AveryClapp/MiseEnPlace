@@ -65,6 +65,7 @@ mep list                                             # browse, newest first
 mep list --tag italian --limit 20                    # filter by tag
 mep show 42                                           # full recipe
 mep show 42 --servings 8                              # scale ingredient amounts
+mep set-servings 42 4                                 # record how many it makes
 
 mep plan 42                                          # AI cooking timeline (experimental)
 mep plan 42 --servings 8                             # ...scaled to 8 servings
@@ -91,8 +92,11 @@ couple steps ahead. Ctrl-C stops cleanly and reports any timers still running.
 
 `--servings N` (on `show`, `plan`, `cook`) scales ingredient amounts to N
 servings. It is best-effort and display-only: only leading quantities are scaled,
-vague amounts like "a handful" pass through untouched, and nothing is saved. If
-the recipe's serving count can't be read, amounts are shown unscaled with a note.
+vague amounts like "a handful" pass through untouched, and nothing is saved. A
+recipe with no recorded serving count is treated as a single serving (the batch
+as written), so `--servings 3` simply makes 3× the recipe. Use `mep set-servings
+<id> <count>` to record the real serving count when you know it, so scaling maps
+to people instead.
 
 Both `plan` and `cook` are experimental: the timings are AI estimates.
 

@@ -133,6 +133,18 @@ def list_cmd(tag, limit):
         click.echo(f"  {row['id']:>4}  {name}  —  {row['channel'] or 'unknown'}")
 
 
+@cli.command(name="set-servings")
+@click.argument("recipe_id", type=int)
+@click.argument("servings")
+def set_servings(recipe_id, servings):
+    """Record or correct how many servings a recipe makes (stored verbatim)."""
+    conn = db.connect()
+    if db.get_recipe(conn, recipe_id) is None:
+        raise MepError(f"No recipe with id {recipe_id}.")
+    db.set_servings(conn, recipe_id, servings)
+    click.echo(f"Recipe {recipe_id} now makes {servings} servings.")
+
+
 @cli.command()
 @click.argument("recipe_id", type=int)
 @click.option("--servings", type=int, default=None, help="Scale ingredients to N servings.")
@@ -291,15 +303,16 @@ def _gather_lines(data: dict, target_servings):
     factor = 1.0
     note = None
     if target_servings:
-        base = scale.parse_base_servings(data["recipe"]["servings"])
-        if not base:
-            note = (
-                f"Couldn't read base servings; showing original amounts "
-                f"(asked for {target_servings})."
-            )
-        elif base != target_servings:
+        # A recipe with no recorded serving count is treated as a single unit
+        # (the batch as written), so --servings N simply makes N times the recipe.
+        base_raw = scale.parse_base_servings(data["recipe"]["servings"])
+        base = base_raw or 1
+        if base != target_servings:
             factor = target_servings / base
-            note = f"Scaled {base} → {target_servings} servings (×{_fmt_factor(factor)})."
+            if base_raw:
+                note = f"Scaled {base} → {target_servings} servings (×{_fmt_factor(factor)})."
+            else:
+                note = f"Scaled ×{target_servings} (1 serving = the full recipe)."
     lines = []
     for ing in ingredients:
         if factor != 1.0:

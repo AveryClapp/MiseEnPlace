@@ -12,7 +12,7 @@ import pytest
 
 os.environ["MEP_HOME"] = tempfile.mkdtemp()
 
-from mep import adapt, config, cook, db, scale  # noqa: E402
+from mep import adapt, cli, config, cook, db, scale  # noqa: E402
 from mep.components import _normalize_components  # noqa: E402
 from mep.errors import MepError  # noqa: E402
 from mep.extract import _parse_json  # noqa: E402
@@ -126,6 +126,33 @@ def test_require_api_key_follows_provider():
     assert config.require_api_key({"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "o"}) == "o"
     with pytest.raises(MepError):  # openai selected but no openai key
         config.require_api_key({"LLM_PROVIDER": "openai", "ANTHROPIC_API_KEY": "a"})
+
+
+def _data_with(servings, ingredients):
+    return {"recipe": {"servings": servings}, "ingredients": ingredients}
+
+
+def test_gather_lines_unknown_servings_scales_as_batches():
+    data = _data_with(None, [{"quantity": "2", "unit": "cups", "name": "flour", "prep": None}])
+    lines, note = cli._gather_lines(data, 3)
+    assert lines == ["6 cups flour"]  # treated as 1 serving -> x3
+    assert "1 serving = the full recipe" in note
+
+
+def test_gather_lines_known_servings_scales_to_people():
+    data = _data_with("4", [{"quantity": "2", "unit": "cups", "name": "flour", "prep": None}])
+    lines, note = cli._gather_lines(data, 2)
+    assert lines == ["1 cups flour"]  # 4 -> 2 servings = half
+    assert "4 → 2 servings" in note
+
+
+def test_set_servings_roundtrip():
+    db.init_db()
+    conn = db.connect()
+    rid = _seed_recipe(conn, "servvid0001")
+    assert db.get_recipe(conn, rid)["recipe"]["servings"] is None
+    db.set_servings(conn, rid, "4-6")
+    assert db.get_recipe(conn, rid)["recipe"]["servings"] == "4-6"
 
 
 def test_increment_cook_count():
