@@ -14,8 +14,7 @@ from .config import (
     MEP_DIR,
     load_config,
     migrate_legacy_home,
-    model,
-    require,
+    require_api_key,
 )
 from .errors import MepError
 from .plan import generate_plan
@@ -40,9 +39,18 @@ def init():
         default=existing.get("YOUTUBE_API_KEY", ""),
         show_default=False,
     )
+    llm_provider = click.prompt(
+        "LLM provider (anthropic or openai)",
+        default=existing.get("LLM_PROVIDER", "anthropic"),
+    ).strip().lower()
     anthropic_key = click.prompt(
-        "Anthropic API key (required for extraction)",
+        "Anthropic API key (blank to skip)",
         default=existing.get("ANTHROPIC_API_KEY", ""),
+        show_default=False,
+    )
+    openai_key = click.prompt(
+        "OpenAI API key (blank to skip)",
+        default=existing.get("OPENAI_API_KEY", ""),
         show_default=False,
     )
 
@@ -50,7 +58,9 @@ def init():
         json.dumps(
             {
                 "YOUTUBE_API_KEY": youtube_key.strip(),
+                "LLM_PROVIDER": llm_provider,
                 "ANTHROPIC_API_KEY": anthropic_key.strip(),
+                "OPENAI_API_KEY": openai_key.strip(),
             },
             indent=2,
         )
@@ -176,16 +186,16 @@ def cook(recipe_id, servings, have, subs):
     if have_list or sub_map:
         # Adapt in memory for this cook only; the cached plan belongs to the
         # original recipe, so generate a fresh (uncached) plan for the result.
-        key = require(config, "ANTHROPIC_API_KEY")
+        require_api_key(config)
         click.echo("Adapting for this cook...")
         adapted = adapt_mod.adapt_recipe(
-            data, have=have_list, subs=sub_map, api_key=key, model=model(config)
+            data, have=have_list, subs=sub_map, config=config
         )
         data = _adapted_data(data, adapted)
         if not data["steps"]:
             raise MepError("Nothing left to cook after adapting.")
         click.echo("Generating cook plan...")
-        tasks = generate_plan(data, api_key=key, model=model(config))
+        tasks = generate_plan(data, config=config)
     else:
         tasks = _ensure_plan(conn, config, data, regenerate=False)
 
@@ -219,11 +229,7 @@ def adapt(recipe_id, have, subs, interactive):
 
     click.echo("Adapting...")
     adapted = adapt_mod.adapt_recipe(
-        data,
-        have=have_list,
-        subs=sub_map,
-        api_key=require(config, "ANTHROPIC_API_KEY"),
-        model=model(config),
+        data, have=have_list, subs=sub_map, config=config
     )
     _preview_adapt(data, adapted, have_list, sub_map)
     _save_adapted(conn, data, adapted)
@@ -237,9 +243,7 @@ def _ensure_plan(conn, config, data, regenerate):
     if not data["steps"]:
         raise MepError("This recipe has no steps to plan.")
     click.echo("Generating cook plan...")
-    tasks = generate_plan(
-        data, api_key=require(config, "ANTHROPIC_API_KEY"), model=model(config)
-    )
+    tasks = generate_plan(data, config=config)
     db.save_plan(conn, data["recipe"]["id"], tasks)
     return tasks
 
@@ -334,9 +338,7 @@ def _ensure_components(conn, config, data):
     if not data["steps"]:
         raise MepError("This recipe has no steps to break down.")
     click.echo("Analyzing components...")
-    comps = analyze_components(
-        data, api_key=require(config, "ANTHROPIC_API_KEY"), model=model(config)
-    )
+    comps = analyze_components(data, config=config)
     db.save_components(conn, data["recipe"]["id"], comps)
     return comps
 

@@ -12,7 +12,7 @@ import pytest
 
 os.environ["MEP_HOME"] = tempfile.mkdtemp()
 
-from mep import adapt, cook, db, scale  # noqa: E402
+from mep import adapt, config, cook, db, scale  # noqa: E402
 from mep.components import _normalize_components  # noqa: E402
 from mep.errors import MepError  # noqa: E402
 from mep.extract import _parse_json  # noqa: E402
@@ -94,6 +94,29 @@ def test_db_roundtrip_and_search():
     assert any(r["id"] == rid for r in db.search(conn, "garlic"))
     assert any(r["id"] == rid for r in db.search(conn, "Test Kitchen"))
     assert any(r["id"] == rid for r in db.list_recipes(conn, tag="italian"))
+
+
+def test_provider_defaults_to_anthropic():
+    assert config.provider({}) == "anthropic"
+    assert config.provider({"LLM_PROVIDER": "OpenAI"}) == "openai"
+
+
+def test_provider_rejects_unknown():
+    with pytest.raises(MepError):
+        config.provider({"LLM_PROVIDER": "gemini"})
+
+
+def test_model_default_per_provider_and_override():
+    assert config.model({}) == config.DEFAULT_MODELS["anthropic"]
+    assert config.model({"LLM_PROVIDER": "openai"}) == config.DEFAULT_MODELS["openai"]
+    assert config.model({"EXTRACTION_MODEL": "custom-x"}) == "custom-x"
+
+
+def test_require_api_key_follows_provider():
+    assert config.require_api_key({"ANTHROPIC_API_KEY": "a"}) == "a"
+    assert config.require_api_key({"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "o"}) == "o"
+    with pytest.raises(MepError):  # openai selected but no openai key
+        config.require_api_key({"LLM_PROVIDER": "openai", "ANTHROPIC_API_KEY": "a"})
 
 
 def test_increment_cook_count():

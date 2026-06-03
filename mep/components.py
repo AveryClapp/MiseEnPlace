@@ -7,10 +7,9 @@ is a named part of the dish with the ingredients it consumes and the steps that
 produce it. Output is validated/normalized before it is trusted.
 """
 
-from .config import EXTRACTION_MODEL
 from .errors import MepError
 from .extract import _parse_json
-from .llm import create_message
+from .llm import complete
 
 SYSTEM_PROMPT = """You break a recipe into its components — the distinct parts a \
 cook makes and then combines (e.g. a marinade, a flatbread, a sauce, a salad).
@@ -40,25 +39,18 @@ the steps given.
 simple dish may be a single component. Keep names distinct."""
 
 
-def analyze_components(recipe_data: dict, *, api_key: str, model: str = EXTRACTION_MODEL) -> list[dict]:
+def analyze_components(recipe_data: dict, *, config: dict) -> list[dict]:
     """Return a validated, ordered list of component dicts. `recipe_data` is
     db.get_recipe()."""
     if not recipe_data["steps"]:
         raise MepError("This recipe has no steps to break down.")
-    message = create_message(
-        api_key,
-        model=model,
-        max_tokens=2000,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": _format_input(recipe_data)}],
-    )
-    text = "".join(
-        block.text for block in message.content if getattr(block, "type", None) == "text"
+    text = complete(
+        config, system=SYSTEM_PROMPT, user=_format_input(recipe_data), max_tokens=2000
     )
     data = _parse_json(text)
     components = data.get("components")
     if not isinstance(components, list):
-        raise MepError("Claude did not return a component list.")
+        raise MepError("The model did not return a component list.")
     return _normalize_components(components)
 
 

@@ -7,9 +7,8 @@ are tolerated downstream via .get, so a partial response still stores cleanly.
 
 import json
 
-from .config import EXTRACTION_MODEL
 from .errors import MepError
-from .llm import create_message
+from .llm import complete
 
 SYSTEM_PROMPT = """You extract one structured recipe from a YouTube cooking \
 video transcript.
@@ -46,24 +45,9 @@ cook_time, or difficulty.
 ingredient) when inferable; otherwise an empty array."""
 
 
-def extract_recipe(
-    transcript: str,
-    *,
-    title: str | None,
-    api_key: str,
-    model: str = EXTRACTION_MODEL,
-) -> dict:
+def extract_recipe(transcript: str, *, title: str | None, config: dict) -> dict:
     user_content = f"Video title: {title or '(unknown)'}\n\nTranscript:\n{transcript}"
-    message = create_message(
-        api_key,
-        model=model,
-        max_tokens=2000,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_content}],
-    )
-    text = "".join(
-        block.text for block in message.content if getattr(block, "type", None) == "text"
-    )
+    text = complete(config, system=SYSTEM_PROMPT, user=user_content, max_tokens=2000)
     return _parse_json(text)
 
 

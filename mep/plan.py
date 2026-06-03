@@ -6,10 +6,9 @@ lists the ingredients and equipment each step needs. Output is validated and
 normalized before it is trusted.
 """
 
-from .config import EXTRACTION_MODEL
 from .errors import MepError
 from .extract import _parse_json
-from .llm import create_message
+from .llm import complete
 
 SYSTEM_PROMPT = """You are a kitchen timing assistant. Given a recipe's steps, \
 produce an efficient cooking timeline a cook can follow in real time.
@@ -51,24 +50,16 @@ recipe gives them (e.g. "2 cups yogurt"). Empty array if none.
 - Keep instructions concise and in the order they should be done."""
 
 
-def generate_plan(recipe_data: dict, *, api_key: str, model: str = EXTRACTION_MODEL) -> list[dict]:
+def generate_plan(recipe_data: dict, *, config: dict) -> list[dict]:
     """Return a validated, ordered list of task dicts. `recipe_data` is
     db.get_recipe()."""
-    user_content = _format_input(recipe_data)
-    message = create_message(
-        api_key,
-        model=model,
-        max_tokens=3000,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_content}],
-    )
-    text = "".join(
-        block.text for block in message.content if getattr(block, "type", None) == "text"
+    text = complete(
+        config, system=SYSTEM_PROMPT, user=_format_input(recipe_data), max_tokens=3000
     )
     data = _parse_json(text)
     tasks = data.get("tasks")
     if not isinstance(tasks, list):
-        raise MepError("Claude did not return a task list for the plan.")
+        raise MepError("The model did not return a task list for the plan.")
     return _normalize_tasks(tasks)
 
 

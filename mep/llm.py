@@ -1,48 +1,90 @@
-"""One place to call Claude, with retries on transient failures.
+"""One place to call the LLM, with retries on transient failures.
 
-Both extraction and plan generation go through create_message so a blip
-(overload, rate limit, timeout, dropped connection) retries with backoff instead
-of failing the whole ingest. Anything non-transient is surfaced as a MepError.
+Extraction, planning, component analysis, and adaptation all go through
+`complete`, which dispatches to Anthropic (default) or OpenAI based on the
+configured provider and returns the response text. A transient blip (overload,
+rate limit, timeout, dropped connection) retries with backoff; anything else is
+surfaced as a MepError. The OpenAI SDK is an optional dependency, imported
+lazily.
 """
 
 import time
 
-from anthropic import Anthropic
-
+from .config import model, provider, require_api_key
 from .errors import MepError
 
-try:  # exception classes have moved around across SDK versions
-    from anthropic import (
-        APIConnectionError,
-        APITimeoutError,
-        InternalServerError,
-        RateLimitError,
-    )
 
-    _RETRYABLE: tuple = (
-        RateLimitError,
-        APITimeoutError,
-        APIConnectionError,
-        InternalServerError,
-    )
-except Exception:  # pragma: no cover - depends on installed version
-    _RETRYABLE = ()
+def _retryable_types() -> tuple:
+    """Transient error classes from whichever SDKs are installed."""
+    types: list = []
+    for module, names in (
+        ("anthropic", ("RateLimitError", "APITimeoutError", "APIConnectionError", "InternalServerError")),
+        ("openai", ("RateLimitError", "APITimeoutError", "APIConnectionError", "InternalServerError")),
+    ):
+        try:
+            mod = __import__(module)
+            types.extend(getattr(mod, n) for n in names if hasattr(mod, n))
+        except Exception:  # pragma: no cover - depends on what's installed
+            continue
+    return tuple(types)
+
+
+_RETRYABLE = _retryable_types()
 
 
 def is_retryable(exc: Exception) -> bool:
     return bool(_RETRYABLE) and isinstance(exc, _RETRYABLE)
 
 
-def create_message(api_key: str, *, max_retries: int = 3, **kwargs):
-    """Call client.messages.create with retry/backoff on transient errors."""
-    client = Anthropic(api_key=api_key)
+def complete(config: dict, *, system: str, user: str, max_tokens: int, max_retries: int = 3) -> str:
+    """Send one system+user turn to the configured provider, return the text."""
+    name = provider(config)
+    call = _openai if name == "openai" else _anthropic
+    label = "OpenAI" if name == "openai" else "Claude"
     delay = 1.5
     for attempt in range(1, max_retries + 1):
         try:
-            return client.messages.create(**kwargs)
+            return call(config, system, user, max_tokens)
+        except MepError:
+            raise  # already actionable (e.g. missing package, missing key)
         except Exception as exc:  # noqa: BLE001
             if is_retryable(exc) and attempt < max_retries:
                 time.sleep(delay)
                 delay *= 2
                 continue
-            raise MepError(f"Claude request failed: {exc}")
+            raise MepError(f"{label} request failed: {exc}")
+
+
+def _anthropic(config: dict, system: str, user: str, max_tokens: int) -> str:
+    from anthropic import Anthropic
+
+    client = Anthropic(api_key=require_api_key(config))
+    message = client.messages.create(
+        model=model(config),
+        max_tokens=max_tokens,
+        system=system,
+        messages=[{"role": "user", "content": user}],
+    )
+    return "".join(
+        block.text for block in message.content if getattr(block, "type", None) == "text"
+    )
+
+
+def _openai(config: dict, system: str, user: str, max_tokens: int) -> str:
+    try:
+        from openai import OpenAI
+    except ImportError:
+        raise MepError(
+            "OpenAI support needs the openai package. Install with: "
+            "pip install 'mise-en-place[openai]'"
+        )
+    client = OpenAI(api_key=require_api_key(config))
+    response = client.chat.completions.create(
+        model=model(config),
+        max_tokens=max_tokens,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    )
+    return response.choices[0].message.content or ""

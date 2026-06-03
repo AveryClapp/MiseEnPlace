@@ -28,6 +28,7 @@ Homepage = "https://github.com/AveryClapp/MiseEnPlace"
 Repository = "https://github.com/AveryClapp/MiseEnPlace"
 
 [project.optional-dependencies]
+openai = ["openai>=1.0"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]

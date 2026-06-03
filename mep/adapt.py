@@ -10,10 +10,9 @@ input into a have-list and a sub-map) and are unit-tested; the Claude call is
 not.
 """
 
-from .config import EXTRACTION_MODEL
 from .errors import MepError
 from .extract import _parse_json
-from .llm import create_message
+from .llm import complete
 
 SYSTEM_PROMPT = """You adapt a recipe to what the cook already has. Make the \
 smallest change that works — the recipe should shift and lose parts, not be \
@@ -52,29 +51,24 @@ def adapt_recipe(
     *,
     have: list[str],
     subs: dict[str, str],
-    api_key: str,
-    model: str = EXTRACTION_MODEL,
+    config: dict,
 ) -> dict:
     """Return an adapted recipe dict (extraction-shaped). `recipe_data` is
     db.get_recipe(); `have` are component/part names already on hand; `subs`
     maps an ingredient to its replacement."""
     if not have and not subs:
         raise MepError("Nothing to adapt — give --have or --sub.")
-    message = create_message(
-        api_key,
-        model=model,
-        max_tokens=2000,
+    text = complete(
+        config,
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": _format_input(recipe_data, have, subs)}],
-    )
-    text = "".join(
-        block.text for block in message.content if getattr(block, "type", None) == "text"
+        user=_format_input(recipe_data, have, subs),
+        max_tokens=2000,
     )
     adapted = _parse_json(text)
     if not isinstance(adapted.get("ingredients"), list) or not isinstance(
         adapted.get("steps"), list
     ):
-        raise MepError("Claude did not return an adapted recipe.")
+        raise MepError("The model did not return an adapted recipe.")
     return adapted
 
 

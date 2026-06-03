@@ -33,10 +33,23 @@ def migrate_legacy_home() -> None:
     if legacy_db.exists():
         legacy_db.rename(MEP_DIR / "mep.db")
 
-# Overridable via config.json key of the same name.
-EXTRACTION_MODEL = "claude-sonnet-4-20250514"
+# Default extraction model per provider; EXTRACTION_MODEL in config overrides.
+DEFAULT_MODELS = {
+    "anthropic": "claude-sonnet-4-20250514",
+    "openai": "gpt-4o",
+}
+# Backwards-compatible alias for the historical default.
+EXTRACTION_MODEL = DEFAULT_MODELS["anthropic"]
 
-CONFIG_KEYS = ("YOUTUBE_API_KEY", "ANTHROPIC_API_KEY", "EXTRACTION_MODEL")
+_API_KEY_FOR = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+
+CONFIG_KEYS = (
+    "YOUTUBE_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "LLM_PROVIDER",
+    "EXTRACTION_MODEL",
+)
 
 
 def load_config() -> dict:
@@ -62,5 +75,20 @@ def require(config: dict, key: str) -> str:
     return value
 
 
+def provider(config: dict) -> str:
+    """Which LLM backend to use: 'anthropic' (default) or 'openai'."""
+    name = (config.get("LLM_PROVIDER") or "anthropic").strip().lower()
+    if name not in _API_KEY_FOR:
+        raise MepError(
+            f"Unknown LLM_PROVIDER '{name}'. Use 'anthropic' or 'openai'."
+        )
+    return name
+
+
+def require_api_key(config: dict) -> str:
+    """The API key for the configured provider."""
+    return require(config, _API_KEY_FOR[provider(config)])
+
+
 def model(config: dict) -> str:
-    return config.get("EXTRACTION_MODEL") or EXTRACTION_MODEL
+    return config.get("EXTRACTION_MODEL") or DEFAULT_MODELS[provider(config)]

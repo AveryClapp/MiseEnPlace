@@ -8,7 +8,7 @@ videos already stored and throttling transcript requests.
 import time
 
 from . import db, youtube
-from .config import model, require
+from .config import require
 from .extract import extract_recipe
 from .transcript import extract_video_id, fetch_transcript
 
@@ -36,12 +36,7 @@ def ingest_one(conn, config, video_id, title, channel) -> tuple[str, int, str | 
         )
         return "no_transcript", recipe_id, None
 
-    extracted = extract_recipe(
-        transcript,
-        title=title,
-        api_key=require(config, "ANTHROPIC_API_KEY"),
-        model=model(config),
-    )
+    extracted = extract_recipe(transcript, title=title, config=config)
     recipe_id = db.insert_recipe(
         conn,
         video_id=video_id,

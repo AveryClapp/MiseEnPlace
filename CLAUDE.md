@@ -1,7 +1,7 @@
 # CLAUDE.md — mep
 
-Guidance for working in this repo. Read alongside the design doc in
-`docs/plans/2026-06-03-mep-design.md`.
+Guidance for working in this repo. Design docs live locally under `docs/plans/`
+(untracked).
 
 ## What this is
 
@@ -67,11 +67,20 @@ docs/plans/      Design docs
 
 ## Extraction
 
-Model `claude-sonnet-4-20250514` (override via config `EXTRACTION_MODEL`). The
-system prompt in `extract.py` owns the JSON contract; `_parse_json` is
+The system prompt in `extract.py` owns the JSON contract; `_parse_json` is
 deliberately forgiving (strips fences, slices to outermost braces). If you
 change the recipe shape, update the prompt, `_parse_json` expectations, and
 `db.insert_recipe` together.
+
+## LLM provider
+
+All model calls (extract, plan, components, adapt) go through `llm.complete(config,
+system=..., user=..., max_tokens=...)`, which returns text and retries transient
+errors. `config` selects the backend: `LLM_PROVIDER` is `anthropic` (default) or
+`openai`; `require_api_key`/`model` resolve the right key and default model
+(`claude-sonnet-4-20250514` / `gpt-4o`, overridable via `EXTRACTION_MODEL`). The
+`openai` SDK is an optional extra, imported lazily. Pass `config` to these
+functions — don't thread `api_key`/`model` through.
 
 ## Testing
 

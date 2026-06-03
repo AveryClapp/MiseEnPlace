@@ -19,14 +19,19 @@ pip install -e .
 mep init
 ```
 
-This creates `~/.mep/`, prompts for two API keys, and builds the database at
+This creates `~/.mep/`, prompts for the keys, and builds the database at
 `~/.mep/mep.db`.
 
-- **Anthropic API key** (required): https://console.anthropic.com/ → API Keys.
+- **An LLM key** (required for extraction): Anthropic by default
+  (https://console.anthropic.com/ → API Keys). To use OpenAI instead, choose
+  `openai` at the provider prompt (or set `LLM_PROVIDER=openai`), supply an
+  OpenAI key, and install the extra: `pip install 'mise-en-place[openai]'`.
 - **YouTube Data API v3 key** (only needed for `--channel` ingestion): see below.
 
-Keys are stored in `~/.mep/config.json`. You can also set `ANTHROPIC_API_KEY`
-or `YOUTUBE_API_KEY` as environment variables, which override the config file.
+Keys are stored in `~/.mep/config.json`. You can also set `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `LLM_PROVIDER`, or `YOUTUBE_API_KEY` as environment variables,
+which override the config file. `EXTRACTION_MODEL` overrides the default model
+for the chosen provider.
 
 ### Getting a YouTube Data API v3 key
 
@@ -119,10 +124,9 @@ mep add --channel @aragusea --limit 5                 # latest 5 from Adam Ragus
 
 ## How it works
 
-`url → transcript (youtube-transcript-api) → Claude (claude-sonnet-4-20250514)
-→ JSON → SQLite`. Search uses SQLite FTS5 over dish name, ingredients, and
-channel. Vague quantities like "a handful" are stored verbatim — nothing is
-normalized. See `docs/plans/` for the full design.
+`url → transcript (youtube-transcript-api) → an LLM (Claude or OpenAI) → JSON →
+SQLite`. Search uses SQLite FTS5 over dish name, ingredients, and channel. Vague
+quantities like "a handful" are stored verbatim — nothing is normalized.
 
 ## Develop
 
