@@ -1,5 +1,5 @@
 [project]
-name = "mise"
+name = "mep"
 version = "0.1.0"
 description = "Personal recipe aggregator: extract recipes from YouTube cooking videos with Claude."
 readme = "README.md"
@@ -15,7 +15,7 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-mep = "mise.cli:main"
+mep = "mep.cli:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -25,4 +25,4 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["mise*"]
+include = ["mep*"]

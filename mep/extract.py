@@ -8,7 +8,7 @@ are tolerated downstream via .get, so a partial response still stores cleanly.
 import json
 
 from .config import EXTRACTION_MODEL
-from .errors import MiseError
+from .errors import MepError
 from .llm import create_message
 
 SYSTEM_PROMPT = """You extract one structured recipe from a YouTube cooking \
@@ -76,8 +76,8 @@ def _parse_json(text: str) -> dict:
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start == -1 or end == -1:
-        raise MiseError(f"Claude did not return JSON. Got: {text[:200]}")
+        raise MepError(f"Claude did not return JSON. Got: {text[:200]}")
     try:
         return json.loads(cleaned[start : end + 1])
     except json.JSONDecodeError as exc:
-        raise MiseError(f"Could not parse Claude JSON: {exc}")
+        raise MepError(f"Could not parse Claude JSON: {exc}")

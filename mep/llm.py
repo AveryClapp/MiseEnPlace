@@ -2,14 +2,14 @@
 
 Both extraction and plan generation go through create_message so a blip
 (overload, rate limit, timeout, dropped connection) retries with backoff instead
-of failing the whole ingest. Anything non-transient is surfaced as a MiseError.
+of failing the whole ingest. Anything non-transient is surfaced as a MepError.
 """
 
 import time
 
 from anthropic import Anthropic
 
-from .errors import MiseError
+from .errors import MepError
 
 try:  # exception classes have moved around across SDK versions
     from anthropic import (
@@ -45,4 +45,4 @@ def create_message(api_key: str, *, max_retries: int = 3, **kwargs):
                 time.sleep(delay)
                 delay *= 2
                 continue
-            raise MiseError(f"Claude request failed: {exc}")
+            raise MepError(f"Claude request failed: {exc}")

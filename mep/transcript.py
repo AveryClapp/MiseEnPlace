@@ -10,7 +10,7 @@ import re
 
 from youtube_transcript_api import YouTubeTranscriptApi
 
-from .errors import MiseError
+from .errors import MepError
 
 try:  # exception names differ across library versions
     from youtube_transcript_api import (  # type: ignore
@@ -34,7 +34,7 @@ def extract_video_id(url: str) -> str:
         return url
     match = _ID_PATTERN.search(url)
     if not match:
-        raise MiseError(f"Could not find a YouTube video id in: {url}")
+        raise MepError(f"Could not find a YouTube video id in: {url}")
     return match.group(1)
 
 
@@ -48,7 +48,7 @@ def fetch_transcript(video_id: str) -> str | None:
         message = str(exc).lower()
         if "transcript" in message or "subtitles" in message:
             return None
-        raise MiseError(f"Failed to fetch transcript for {video_id}: {exc}")
+        raise MepError(f"Failed to fetch transcript for {video_id}: {exc}")
 
     text = " ".join(seg["text"] for seg in segments if seg.get("text")).strip()
     return text or None

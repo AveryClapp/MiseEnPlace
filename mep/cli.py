@@ -1,4 +1,4 @@
-"""Click entry points for mise."""
+"""Click entry points for mep."""
 
 import json
 
@@ -8,21 +8,29 @@ from . import adapt as adapt_mod
 from . import cook as cook_mod
 from . import db, ingest, scale
 from .components import analyze_components
-from .config import CONFIG_PATH, DB_PATH, MISE_DIR, load_config, model, require
-from .errors import MiseError
+from .config import (
+    CONFIG_PATH,
+    DB_PATH,
+    MEP_DIR,
+    load_config,
+    migrate_legacy_home,
+    model,
+    require,
+)
+from .errors import MepError
 from .plan import generate_plan
 
 
 @click.group()
-@click.version_option(package_name="mise")
+@click.version_option(package_name="mep")
 def cli():
-    """mise — extract recipes from YouTube cooking videos."""
+    """mep — extract recipes from YouTube cooking videos."""
 
 
 @cli.command()
 def init():
-    """Create ~/.mise, prompt for API keys, and build the database."""
-    MISE_DIR.mkdir(parents=True, exist_ok=True)
+    """Create ~/.mep, prompt for API keys, and build the database."""
+    MEP_DIR.mkdir(parents=True, exist_ok=True)
     existing = {}
     if CONFIG_PATH.exists():
         existing = json.loads(CONFIG_PATH.read_text())
@@ -125,7 +133,7 @@ def show(recipe_id, servings, parts):
     conn = db.connect()
     data = db.get_recipe(conn, recipe_id)
     if data is None:
-        raise MiseError(f"No recipe with id {recipe_id}.")
+        raise MepError(f"No recipe with id {recipe_id}.")
     if parts:
         _render_parts(data["recipe"], _ensure_components(conn, config, data))
         return
@@ -143,7 +151,7 @@ def plan(recipe_id, regenerate, servings):
     conn = db.connect()
     data = db.get_recipe(conn, recipe_id)
     if data is None:
-        raise MiseError(f"No recipe with id {recipe_id}.")
+        raise MepError(f"No recipe with id {recipe_id}.")
     tasks = _ensure_plan(conn, config, data, regenerate)
     gather, note = _gather_lines(data, servings)
     _render_plan(data["recipe"], tasks, gather, note)
@@ -161,7 +169,7 @@ def cook(recipe_id, servings, have, subs):
     conn = db.connect()
     data = db.get_recipe(conn, recipe_id)
     if data is None:
-        raise MiseError(f"No recipe with id {recipe_id}.")
+        raise MepError(f"No recipe with id {recipe_id}.")
 
     have_list = _split_csv(have)
     sub_map = _collect_subs(subs)
@@ -175,7 +183,7 @@ def cook(recipe_id, servings, have, subs):
         )
         data = _adapted_data(data, adapted)
         if not data["steps"]:
-            raise MiseError("Nothing left to cook after adapting.")
+            raise MepError("Nothing left to cook after adapting.")
         click.echo("Generating cook plan...")
         tasks = generate_plan(data, api_key=key, model=model(config))
     else:
@@ -197,7 +205,7 @@ def adapt(recipe_id, have, subs, interactive):
     conn = db.connect()
     data = db.get_recipe(conn, recipe_id)
     if data is None:
-        raise MiseError(f"No recipe with id {recipe_id}.")
+        raise MepError(f"No recipe with id {recipe_id}.")
 
     have_list = _split_csv(have)
     sub_map = _collect_subs(subs)
@@ -225,7 +233,7 @@ def _ensure_plan(conn, config, data, regenerate):
     if tasks and not regenerate:
         return tasks
     if not data["steps"]:
-        raise MiseError("This recipe has no steps to plan.")
+        raise MepError("This recipe has no steps to plan.")
     click.echo("Generating cook plan...")
     tasks = generate_plan(
         data, api_key=require(config, "ANTHROPIC_API_KEY"), model=model(config)
@@ -322,7 +330,7 @@ def _ensure_components(conn, config, data):
     if comps:
         return comps
     if not data["steps"]:
-        raise MiseError("This recipe has no steps to break down.")
+        raise MepError("This recipe has no steps to break down.")
     click.echo("Analyzing components...")
     comps = analyze_components(
         data, api_key=require(config, "ANTHROPIC_API_KEY"), model=model(config)
@@ -494,8 +502,9 @@ def _render(data: dict, target_servings=None) -> None:
 
 def main():
     try:
+        migrate_legacy_home()
         cli(prog_name="mep", standalone_mode=False)
-    except MiseError as exc:
+    except MepError as exc:
         click.secho(f"Error: {exc}", fg="red", err=True)
         raise SystemExit(1)
     except click.ClickException as exc:

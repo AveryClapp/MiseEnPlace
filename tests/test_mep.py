@@ -1,8 +1,8 @@
 """Offline unit tests: no network, no API keys.
 
 Covers the pure logic: video-id parsing, defensive JSON parsing, and a full
-SQLite round-trip including FTS search. Set MISE_HOME to a tmp dir before
-importing mise modules that read config paths.
+SQLite round-trip including FTS search. Set MEP_HOME to a tmp dir before
+importing mep modules that read config paths.
 """
 
 import os
@@ -10,14 +10,14 @@ import tempfile
 
 import pytest
 
-os.environ["MISE_HOME"] = tempfile.mkdtemp()
+os.environ["MEP_HOME"] = tempfile.mkdtemp()
 
-from mise import adapt, cook, db, scale  # noqa: E402
-from mise.components import _normalize_components  # noqa: E402
-from mise.errors import MiseError  # noqa: E402
-from mise.extract import _parse_json  # noqa: E402
-from mise.plan import _normalize_tasks  # noqa: E402
-from mise.transcript import extract_video_id  # noqa: E402
+from mep import adapt, cook, db, scale  # noqa: E402
+from mep.components import _normalize_components  # noqa: E402
+from mep.errors import MepError  # noqa: E402
+from mep.extract import _parse_json  # noqa: E402
+from mep.plan import _normalize_tasks  # noqa: E402
+from mep.transcript import extract_video_id  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -35,7 +35,7 @@ def test_extract_video_id(url, expected):
 
 
 def test_extract_video_id_rejects_garbage():
-    with pytest.raises(MiseError):
+    with pytest.raises(MepError):
         extract_video_id("https://example.com/not-a-video")
 
 
@@ -53,7 +53,7 @@ def test_parse_json_non_recipe():
 
 
 def test_parse_json_rejects_non_json():
-    with pytest.raises(MiseError):
+    with pytest.raises(MepError):
         _parse_json("sorry, no JSON here")
 
 
@@ -242,7 +242,7 @@ def test_normalize_tasks_coerces_and_cleans():
 
 
 def test_normalize_tasks_all_empty_raises():
-    with pytest.raises(MiseError):
+    with pytest.raises(MepError):
         _normalize_tasks([{"instruction": ""}, "junk"])
 
 
@@ -370,7 +370,7 @@ def test_normalize_components_coerces():
 
 
 def test_normalize_components_all_empty_raises():
-    with pytest.raises(MiseError):
+    with pytest.raises(MepError):
         _normalize_components([{"name": ""}, "junk"])
 
 

@@ -7,14 +7,11 @@ Claude, and stores it in local SQLite. Everything stays on your machine.
 ## Install
 
 ```bash
-git clone <this-repo> mise && cd mise
+git clone <this-repo> mep && cd mep
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-The command is named `mep` (the name `mise` is taken by the unrelated
-[jdx/mise](https://mise.jdx.dev/) tool-version manager). The Python package is
-still `mise`.
 
 ## Setup
 
@@ -22,13 +19,13 @@ still `mise`.
 mep init
 ```
 
-This creates `~/.mise/`, prompts for two API keys, and builds the database at
-`~/.mise/mise.db`.
+This creates `~/.mep/`, prompts for two API keys, and builds the database at
+`~/.mep/mep.db`.
 
 - **Anthropic API key** (required): https://console.anthropic.com/ → API Keys.
 - **YouTube Data API v3 key** (only needed for `--channel` ingestion): see below.
 
-Keys are stored in `~/.mise/config.json`. You can also set `ANTHROPIC_API_KEY`
+Keys are stored in `~/.mep/config.json`. You can also set `ANTHROPIC_API_KEY`
 or `YOUTUBE_API_KEY` as environment variables, which override the config file.
 
 ### Getting a YouTube Data API v3 key

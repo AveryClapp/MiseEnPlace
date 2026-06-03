@@ -8,7 +8,7 @@ produce it. Output is validated/normalized before it is trusted.
 """
 
 from .config import EXTRACTION_MODEL
-from .errors import MiseError
+from .errors import MepError
 from .extract import _parse_json
 from .llm import create_message
 
@@ -44,7 +44,7 @@ def analyze_components(recipe_data: dict, *, api_key: str, model: str = EXTRACTI
     """Return a validated, ordered list of component dicts. `recipe_data` is
     db.get_recipe()."""
     if not recipe_data["steps"]:
-        raise MiseError("This recipe has no steps to break down.")
+        raise MepError("This recipe has no steps to break down.")
     message = create_message(
         api_key,
         model=model,
@@ -58,7 +58,7 @@ def analyze_components(recipe_data: dict, *, api_key: str, model: str = EXTRACTI
     data = _parse_json(text)
     components = data.get("components")
     if not isinstance(components, list):
-        raise MiseError("Claude did not return a component list.")
+        raise MepError("Claude did not return a component list.")
     return _normalize_components(components)
 
 
@@ -80,7 +80,7 @@ def _normalize_components(components: list) -> list[dict]:
             }
         )
     if not cleaned:
-        raise MiseError("Claude returned no usable components.")
+        raise MepError("Claude returned no usable components.")
     return cleaned
 
 

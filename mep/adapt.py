@@ -11,7 +11,7 @@ not.
 """
 
 from .config import EXTRACTION_MODEL
-from .errors import MiseError
+from .errors import MepError
 from .extract import _parse_json
 from .llm import create_message
 
@@ -59,7 +59,7 @@ def adapt_recipe(
     db.get_recipe(); `have` are component/part names already on hand; `subs`
     maps an ingredient to its replacement."""
     if not have and not subs:
-        raise MiseError("Nothing to adapt — give --have or --sub.")
+        raise MepError("Nothing to adapt — give --have or --sub.")
     message = create_message(
         api_key,
         model=model,
@@ -74,7 +74,7 @@ def adapt_recipe(
     if not isinstance(adapted.get("ingredients"), list) or not isinstance(
         adapted.get("steps"), list
     ):
-        raise MiseError("Claude did not return an adapted recipe.")
+        raise MepError("Claude did not return an adapted recipe.")
     return adapted
 
 

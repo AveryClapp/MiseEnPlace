@@ -43,7 +43,7 @@ instructions and non-dict entries are dropped, `mode` defaults to `active`,
 `duration_minutes` is coerced to a float ≥ 0, and string/list fields are
 cleaned. The result is cached so `cook` and re-display reuse it. ~1 to 2 cents
 per plan, once per recipe. Same defensive JSON parsing as extraction, plus the
-shared retry wrapper in `mise/llm.py` (exponential backoff on rate-limit /
+shared retry wrapper in `mep/llm.py` (exponential backoff on rate-limit /
 timeout / connection / 5xx errors).
 
 ## Storage
@@ -80,7 +80,7 @@ active spine runs sequentially while passive timers overlap, so wall-clock is
 ## Servings scaling
 
 `plan`, `cook`, and `show` take `--servings N`. Scaling is best-effort
-(`mise/scale.py`): only the **leading amount** of a quantity string is scaled
+(`mep/scale.py`): only the **leading amount** of a quantity string is scaled
 ("200", "1 1/2", both ends of "3-4"); embedded numbers like the "14" in
 "1 (14 oz can)" are left alone, and vague amounts ("a handful", "to taste") pass
 through untouched. Fractions are kept kitchen-friendly. The base count comes
@@ -137,15 +137,15 @@ Step 2 of 16   [passive ~2h]
 
 ## Modules
 
-- `mise/plan.py` — Claude call, parse, validate/normalize (`generate_plan`,
+- `mep/plan.py` — Claude call, parse, validate/normalize (`generate_plan`,
   `_normalize_tasks`).
-- `mise/cook.py` — interactive loop + pure helpers (`fmt_duration`, `fmt_clock`,
+- `mep/cook.py` — interactive loop + pure helpers (`fmt_duration`, `fmt_clock`,
   `status_line`, `timers_summary`, `estimate_wallclock_minutes`, `all_equipment`,
   `preheat_cue`) that are unit-tested.
-- `mise/scale.py` — `parse_base_servings`, `scale_quantity` (pure, unit-tested).
-- `mise/llm.py` — `create_message` retry wrapper shared with extraction.
-- `mise/db.py` — `plan_steps` schema + migration, `save_plan`, `get_plan`.
-- `mise/cli.py` — `plan`/`cook`/`show` commands, `_render_plan`, `_gather_lines`.
+- `mep/scale.py` — `parse_base_servings`, `scale_quantity` (pure, unit-tested).
+- `mep/llm.py` — `create_message` retry wrapper shared with extraction.
+- `mep/db.py` — `plan_steps` schema + migration, `save_plan`, `get_plan`.
+- `mep/cli.py` — `plan`/`cook`/`show` commands, `_render_plan`, `_gather_lines`.
 
 ## Testing (offline)
 

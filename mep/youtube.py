@@ -12,7 +12,7 @@ import urllib.request
 
 from googleapiclient.discovery import build
 
-from .errors import MiseError
+from .errors import MepError
 
 
 def fetch_oembed(video_id: str) -> dict:
@@ -44,7 +44,7 @@ def resolve_channel(api_key: str, handle: str) -> tuple[str, str]:
     )
     items = resp.get("items")
     if not items:
-        raise MiseError(f"Channel not found: @{handle}")
+        raise MepError(f"Channel not found: @{handle}")
     channel = items[0]
     uploads = channel["contentDetails"]["relatedPlaylists"]["uploads"]
     title = channel["snippet"]["title"]

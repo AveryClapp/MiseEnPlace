@@ -123,11 +123,11 @@ replaces the set; `get_components` returns it ordered or `[]`.
 
 ## Modules
 
-- `mise/components.py` — `analyze_components`, `_normalize_components`.
-- `mise/adapt.py` — `adapt_recipe`, pure `parse_selection`/`parse_subs`.
-- `mise/db.py` — `recipe_components` schema, `save_components`/`get_components`,
+- `mep/components.py` — `analyze_components`, `_normalize_components`.
+- `mep/adapt.py` — `adapt_recipe`, pure `parse_selection`/`parse_subs`.
+- `mep/db.py` — `recipe_components` schema, `save_components`/`get_components`,
   `replace_recipe_content`, `next_adapted_video_id`.
-- `mise/cli.py` — `adapt` command, `show --parts`, `cook --have/--sub`.
+- `mep/cli.py` — `adapt` command, `show --parts`, `cook --have/--sub`.
 
 ## Testing (offline)
 

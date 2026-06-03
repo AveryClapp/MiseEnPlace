@@ -1,14 +1,14 @@
-# mise — Design & Implementation Plan
+# mep — Design & Implementation Plan
 
 **Date:** 2026-06-03
 **Status:** Implemented (v0.1.0)
 
 ## 1. Purpose
 
-`mise` is a personal CLI that turns YouTube cooking videos into a searchable,
+`mep` is a personal CLI that turns YouTube cooking videos into a searchable,
 structured recipe database. It pulls a video's transcript, sends it to Claude
 for structured extraction, and stores the result in local SQLite. No web UI, no
-server, no accounts — one person, one machine, one database at `~/.mise/mise.db`.
+server, no accounts — one person, one machine, one database at `~/.mep/mep.db`.
 
 Named after *mise en place*: everything in its place before you cook.
 
@@ -32,10 +32,10 @@ Explicitly out of scope (YAGNI):
 Single Python package, `click` CLI, SQLite (stdlib `sqlite3`, no ORM).
 
 ```
-mise/
+mep/
   cli.py          Click commands: init, add, search, show, list
-  config.py       ~/.mise paths, config load/validate, model id
-  errors.py       MiseError (user-facing, caught at CLI boundary)
+  config.py       ~/.mep paths, config load/validate, model id
+  errors.py       MepError (user-facing, caught at CLI boundary)
   db.py           Schema, connection, inserts, FTS5 search, queries
   transcript.py   URL -> video_id, fetch transcript text
   extract.py      Transcript -> Claude -> parsed recipe dict
@@ -101,10 +101,10 @@ need only the Anthropic key — not a YouTube Data API key.
 ## 7. CLI Surface
 
 The command is `mep` (the name `mise` is taken by the unrelated jdx/mise
-tool-version manager). The Python package and DB are still named `mise`.
+tool-version manager). The Python package and DB are named `mep` too.
 
 ```
-mep init                                    prompt for keys, create ~/.mise + DB
+mep init                                    prompt for keys, create ~/.mep + DB
 mep add <url>                               ingest one video
 mep add --channel <handle> [--limit N]      ingest channel / latest N
 mep search <query>                          FTS5 search
@@ -112,13 +112,13 @@ mep show <recipe_id>                        full recipe, formatted
 mep list [--tag <tag>] [--limit N]          browse (newest first)
 ```
 
-`MiseError` is caught at the CLI boundary and printed as a clean message with a
+`MepError` is caught at the CLI boundary and printed as a clean message with a
 non-zero exit; everything else propagates as a normal traceback (a bug).
 
 ## 8. Task Breakdown
 
-1. **Package skeleton** → `pip install -e .` exposes `mise --help`.
-2. **config.py / errors.py** → paths resolve, missing config raises MiseError.
+1. **Package skeleton** → `pip install -e .` exposes `mep --help`.
+2. **config.py / errors.py** → paths resolve, missing config raises MepError.
 3. **db.py** → `init_db()` creates all tables + FTS; round-trip insert/get works.
 4. **transcript.py** → URL forms (`watch?v=`, `youtu.be`, `/shorts/`, bare id)
    parse; missing transcript returns `None` not an exception.
@@ -134,7 +134,7 @@ non-zero exit; everything else propagates as a normal traceback (a bug).
 
 ## 9. Verification
 
-- `mep init` writes `~/.mise/config.json` and creates `~/.mise/mise.db`.
+- `mep init` writes `~/.mep/config.json` and creates `~/.mep/mep.db`.
 - `pytest` passes for the offline units in §8.10.
 - Manual smoke (needs keys): `mep add <known cooking video>` then
   `mep show 1`, `mep search <ingredient>`, `mep list`.

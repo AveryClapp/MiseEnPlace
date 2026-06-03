@@ -7,7 +7,7 @@ normalized before it is trusted.
 """
 
 from .config import EXTRACTION_MODEL
-from .errors import MiseError
+from .errors import MepError
 from .extract import _parse_json
 from .llm import create_message
 
@@ -68,7 +68,7 @@ def generate_plan(recipe_data: dict, *, api_key: str, model: str = EXTRACTION_MO
     data = _parse_json(text)
     tasks = data.get("tasks")
     if not isinstance(tasks, list):
-        raise MiseError("Claude did not return a task list for the plan.")
+        raise MepError("Claude did not return a task list for the plan.")
     return _normalize_tasks(tasks)
 
 
@@ -103,7 +103,7 @@ def _normalize_tasks(tasks: list) -> list[dict]:
         )
 
     if not cleaned:
-        raise MiseError("Claude returned no usable tasks for the plan.")
+        raise MepError("Claude returned no usable tasks for the plan.")
     return cleaned
 
 
