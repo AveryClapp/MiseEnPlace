@@ -58,6 +58,11 @@ mep show 42 --servings 8                              # scale ingredient amounts
 mep plan 42                                          # AI cooking timeline (experimental)
 mep plan 42 --servings 8                             # ...scaled to 8 servings
 mep cook 42                                          # step-by-step walkthrough (experimental)
+
+mep show 42 --parts                                  # what each ingredient is for
+mep adapt 42                                         # rewrite around what you have (interactive)
+mep adapt 42 --have pita --sub "yogurt=sour cream"   # ...or state it directly
+mep cook 42 --have pita                              # adapt just for this cook
 ```
 
 `plan` makes one Claude call to reorder a recipe's steps into an efficient
@@ -79,6 +84,16 @@ vague amounts like "a handful" pass through untouched, and nothing is saved. If
 the recipe's serving count can't be read, amounts are shown unscaled with a note.
 
 Both `plan` and `cook` are experimental: the timings are AI estimates.
+
+`show --parts` breaks a recipe into its components (marinade, pita, sauce…) so
+you can see what each ingredient is for. `adapt` rewrites the recipe around what
+you already have: pick the parts you bought or made ahead and it drops the steps
+and ingredients needed only to make those (keeping the steps that use them), and
+applies any ingredient swaps. It then offers to save the result as a new copy,
+overwrite the original, or discard it. `cook --have/--sub` does the same rewrite
+in memory for a single cook without saving anything. These are experimental and
+use Claude; the rewrite is intentionally light (it shifts and trims the recipe,
+it doesn't reinvent it).
 
 Channel ingestion is idempotent: videos already stored are skipped, so you can
 re-run it to pick up only what's new. Non-recipe videos and videos without

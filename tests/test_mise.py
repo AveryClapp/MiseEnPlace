@@ -12,7 +12,8 @@ import pytest
 
 os.environ["MISE_HOME"] = tempfile.mkdtemp()
 
-from mise import cook, db, scale  # noqa: E402
+from mise import adapt, cook, db, scale  # noqa: E402
+from mise.components import _normalize_components  # noqa: E402
 from mise.errors import MiseError  # noqa: E402
 from mise.extract import _parse_json  # noqa: E402
 from mise.plan import _normalize_tasks  # noqa: E402
@@ -311,3 +312,150 @@ def test_preheat_cue_looks_ahead():
     assert cue is not None and "oven" in cue
     # No cue once you're already on the heat step.
     assert cook.preheat_cue(tasks, 1) is None
+
+
+# --- adapt: input parsing -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text,count,expected",
+    [
+        ("1,4", 5, [0, 3]),
+        ("1, 4", 5, [0, 3]),
+        ("", 5, []),
+        ("2,2,2", 5, [1]),  # dedupes
+        ("0,6,3", 5, [2]),  # out-of-range dropped
+        ("x,3,y", 5, [2]),  # junk ignored
+    ],
+)
+def test_parse_selection(text, count, expected):
+    assert adapt.parse_selection(text, count) == expected
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("yogurt=sour cream", {"yogurt": "sour cream"}),
+        ("a=b, c=d", {"a": "b", "c": "d"}),
+        ("", {}),
+        ("nope", {}),  # no '='
+        ("a=, =b", {}),  # empty side skipped
+        (" butter = oil ", {"butter": "oil"}),
+    ],
+)
+def test_parse_subs(text, expected):
+    assert adapt.parse_subs(text) == expected
+
+
+# --- components: normalization + storage --------------------------------------
+
+
+def test_normalize_components_coerces():
+    raw = [
+        {
+            "name": "  Pita  ",
+            "purpose": " the bread ",
+            "ingredients": ["150g flour", "", 2],
+            "make_steps": [1, "3", "x", 5.0],
+        },
+        {"name": "  "},  # dropped (no name)
+        "junk",  # dropped
+    ]
+    comps = _normalize_components(raw)
+    assert len(comps) == 1
+    assert comps[0]["name"] == "Pita"
+    assert comps[0]["purpose"] == "the bread"
+    assert comps[0]["ingredients"] == ["150g flour", "2"]
+    assert comps[0]["make_steps"] == [1, 3, 5]
+
+
+def test_normalize_components_all_empty_raises():
+    with pytest.raises(MiseError):
+        _normalize_components([{"name": ""}, "junk"])
+
+
+def test_save_get_components_roundtrip():
+    db.init_db()
+    conn = db.connect()
+    rid = _seed_recipe(conn, "compvid0001")
+    comps = [
+        {"name": "Pita", "purpose": "bread", "ingredients": ["flour"], "make_steps": [1, 2]},
+        {"name": "Marinade", "purpose": "flavor", "ingredients": ["yogurt"], "make_steps": [3]},
+    ]
+    db.save_components(conn, rid, comps)
+    got = db.get_components(conn, rid)
+    assert [c["name"] for c in got] == ["Pita", "Marinade"]
+    assert got[0]["ingredients"] == ["flour"]
+    assert got[0]["make_steps"] == [1, 2]
+
+    # Cascades on recipe delete.
+    with conn:
+        conn.execute("DELETE FROM recipes WHERE id = ?", (rid,))
+    assert db.get_components(conn, rid) == []
+
+
+# --- adapt: save-copy + overwrite ---------------------------------------------
+
+
+def test_next_adapted_video_id_is_unique():
+    db.init_db()
+    conn = db.connect()
+    rid = _seed_recipe(conn, "basevideo01")
+    first = db.next_adapted_video_id(conn, "basevideo01")
+    assert first == "basevideo01~adapted"
+    # Take it, then the next one steps to a fresh suffix.
+    db.insert_recipe(
+        conn,
+        video_id=first,
+        title="t (adapted)",
+        channel="c",
+        url="u",
+        raw_transcript=None,
+        extracted={"dish_name": "d", "ingredients": [], "steps": [], "tags": []},
+    )
+    assert db.next_adapted_video_id(conn, "basevideo01") == "basevideo01~adapted2"
+
+
+def test_replace_recipe_content_swaps_and_clears_caches():
+    db.init_db()
+    conn = db.connect()
+    rid = db.insert_recipe(
+        conn,
+        video_id="replacevid01",
+        title="Original",
+        channel="Chef",
+        url="u",
+        raw_transcript="x",
+        extracted={
+            "dish_name": "Shawarma",
+            "ingredients": [{"name": "pita flour", "quantity": "150", "unit": "g", "prep": None}],
+            "steps": ["make pita", "assemble"],
+            "tags": ["wrap"],
+        },
+    )
+    db.save_plan(conn, rid, [{"instruction": "a", "duration_minutes": 1, "mode": "active"}])
+    db.save_components(conn, rid, [{"name": "Pita", "purpose": "", "ingredients": [], "make_steps": [1]}])
+    assert any(r["id"] == rid for r in db.search(conn, "pita"))
+
+    db.replace_recipe_content(
+        conn,
+        rid,
+        {
+            "dish_name": "Shawarma",
+            "cook_time": None,
+            "servings": None,
+            "difficulty": None,
+            "ingredients": [{"name": "store-bought pita", "quantity": "1", "unit": None, "prep": None}],
+            "steps": ["assemble"],
+            "tags": ["wrap"],
+        },
+    )
+
+    full = db.get_recipe(conn, rid)
+    assert [s["instruction"] for s in full["steps"]] == ["assemble"]
+    assert full["ingredients"][0]["name"] == "store-bought pita"
+    # Stale caches cleared; FTS reflects the new ingredient, not the old one.
+    assert db.get_plan(conn, rid) == []
+    assert db.get_components(conn, rid) == []
+    assert any(r["id"] == rid for r in db.search(conn, "store-bought"))
+    assert not any(r["id"] == rid for r in db.search(conn, "flour"))
