@@ -5,7 +5,7 @@ import json
 import click
 
 from . import cook as cook_mod
-from . import db, ingest
+from . import db, ingest, scale
 from .config import CONFIG_PATH, DB_PATH, MISE_DIR, load_config, model, require
 from .errors import MiseError
 from .plan import generate_plan
@@ -114,33 +114,37 @@ def list_cmd(tag, limit):
 
 @cli.command()
 @click.argument("recipe_id", type=int)
-def show(recipe_id):
+@click.option("--servings", type=int, default=None, help="Scale ingredients to N servings.")
+def show(recipe_id, servings):
     """Display one recipe in full."""
     conn = db.connect()
     data = db.get_recipe(conn, recipe_id)
     if data is None:
         raise MiseError(f"No recipe with id {recipe_id}.")
-    _render(data)
+    _render(data, servings)
 
 
 @cli.command()
 @click.argument("recipe_id", type=int)
 @click.option("--regenerate", is_flag=True, help="Rebuild the plan from scratch.")
-def plan(recipe_id, regenerate):
+@click.option("--servings", type=int, default=None, help="Scale ingredients to N servings.")
+def plan(recipe_id, regenerate, servings):
     """Generate a cooking timeline for a recipe (experimental)."""
     config = load_config()
-    db.init_db()  # ensure plan_steps exists on older databases
+    db.init_db()  # ensure plan_steps exists / is migrated on older databases
     conn = db.connect()
     data = db.get_recipe(conn, recipe_id)
     if data is None:
         raise MiseError(f"No recipe with id {recipe_id}.")
     tasks = _ensure_plan(conn, config, data, regenerate)
-    _render_plan(data["recipe"], tasks)
+    gather, note = _gather_lines(data, servings)
+    _render_plan(data["recipe"], tasks, gather, note)
 
 
 @cli.command()
 @click.argument("recipe_id", type=int)
-def cook(recipe_id):
+@click.option("--servings", type=int, default=None, help="Scale ingredients to N servings.")
+def cook(recipe_id, servings):
     """Walk through a recipe's timeline step by step (experimental)."""
     config = load_config()
     db.init_db()
@@ -149,7 +153,8 @@ def cook(recipe_id):
     if data is None:
         raise MiseError(f"No recipe with id {recipe_id}.")
     tasks = _ensure_plan(conn, config, data, regenerate=False)
-    cook_mod.run(data["recipe"], tasks)
+    gather, note = _gather_lines(data, servings)
+    cook_mod.run(data["recipe"], tasks, gather_lines=gather, scale_note=note)
 
 
 def _ensure_plan(conn, config, data, regenerate):
@@ -167,16 +172,23 @@ def _ensure_plan(conn, config, data, regenerate):
     return tasks
 
 
-def _render_plan(recipe: dict, tasks: list[dict]) -> None:
+def _render_plan(recipe: dict, tasks: list[dict], gather=None, note=None) -> None:
     name = recipe["dish_name"] or recipe["title"] or "recipe"
     hands_on = sum(t["duration_minutes"] or 0 for t in tasks if t["mode"] == "active")
-    total = sum(t["duration_minutes"] or 0 for t in tasks)
+    total = cook_mod.estimate_wallclock_minutes(tasks)
     click.echo()
     click.secho(f"Cook plan: {name}", bold=True)
+    if note:
+        click.secho(f"  {note}", fg="yellow")
     click.echo(
         f"  hands-on ~{cook_mod.fmt_duration(hands_on)}"
         f"  ·  total ~{cook_mod.fmt_duration(total)}\n"
     )
+    if gather:
+        click.secho("  Gather:", underline=True)
+        for line in gather:
+            click.echo(f"    - {line}")
+        click.echo()
     for i, task in enumerate(tasks, start=1):
         tag = f"{task['mode']} {cook_mod.fmt_duration(task['duration_minutes'])}"
         click.echo(f"  {i:>2}  [{tag}]  {task['instruction']}")
@@ -185,7 +197,47 @@ def _render_plan(recipe: dict, tasks: list[dict]) -> None:
     click.echo()
 
 
-def _render(data: dict) -> None:
+def _ingredient_line(ing: dict) -> str:
+    """One human-readable ingredient line from a structured row."""
+    parts = [p for p in (ing.get("quantity"), ing.get("unit"), ing.get("name")) if p]
+    line = " ".join(parts)
+    if ing.get("prep"):
+        line += f", {ing['prep']}"
+    return line
+
+
+def _gather_lines(data: dict, target_servings):
+    """Build mise-en-place gather lines from a recipe's ingredients, optionally
+    scaled to target_servings. Returns (lines, note). note is a yellow banner
+    string when scaling applied, else None."""
+    ingredients = data["ingredients"]
+    factor = 1.0
+    note = None
+    if target_servings:
+        base = scale.parse_base_servings(data["recipe"]["servings"])
+        if not base:
+            note = (
+                f"Couldn't read base servings; showing original amounts "
+                f"(asked for {target_servings})."
+            )
+        elif base != target_servings:
+            factor = target_servings / base
+            note = f"Scaled {base} → {target_servings} servings (×{_fmt_factor(factor)})."
+    lines = []
+    for ing in ingredients:
+        if factor != 1.0:
+            ing = {**ing, "quantity": scale.scale_quantity(ing.get("quantity"), factor)}
+        line = _ingredient_line(ing)
+        if line:
+            lines.append(line)
+    return lines, note
+
+
+def _fmt_factor(factor: float) -> str:
+    return f"{factor:.2f}".rstrip("0").rstrip(".")
+
+
+def _render(data: dict, target_servings=None) -> None:
     r = data["recipe"]
     title = r["dish_name"] or r["title"] or "(untitled)"
     click.echo()
@@ -206,13 +258,12 @@ def _render(data: dict) -> None:
         click.echo("  tags: " + ", ".join(data["tags"]))
 
     if data["ingredients"]:
+        gather, note = _gather_lines(data, target_servings)
         click.echo()
         click.secho("Ingredients", underline=True)
-        for ing in data["ingredients"]:
-            parts = [p for p in (ing["quantity"], ing["unit"], ing["name"]) if p]
-            line = " ".join(parts)
-            if ing["prep"]:
-                line += f", {ing['prep']}"
+        if note:
+            click.secho(f"  {note}", fg="yellow")
+        for line in gather:
             click.echo(f"  - {line}")
 
     if data["steps"]:
