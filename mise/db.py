@@ -45,6 +45,17 @@ CREATE TABLE IF NOT EXISTS tags (
     tag       TEXT
 );
 
+-- Cached AI-generated cooking timeline, one ordered set of tasks per recipe.
+CREATE TABLE IF NOT EXISTS plan_steps (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    recipe_id        INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+    position         INTEGER,
+    instruction      TEXT,
+    duration_minutes REAL,
+    mode             TEXT,
+    overlap_hint     TEXT
+);
+
 -- Contentless FTS index keyed by rowid = recipes.id.
 CREATE VIRTUAL TABLE IF NOT EXISTS recipe_fts USING fts5(
     dish_name, channel, ingredients, content=''
@@ -197,6 +208,38 @@ def search(conn: sqlite3.Connection, query: str) -> list[sqlite3.Row]:
     except sqlite3.OperationalError:
         phrase = '"' + query.replace('"', " ") + '"'
         return conn.execute(sql, (phrase,)).fetchall()
+
+
+def save_plan(conn: sqlite3.Connection, recipe_id: int, tasks: list[dict]) -> None:
+    """Replace any cached plan for the recipe with these ordered tasks."""
+    with conn:
+        conn.execute("DELETE FROM plan_steps WHERE recipe_id = ?", (recipe_id,))
+        conn.executemany(
+            "INSERT INTO plan_steps"
+            " (recipe_id, position, instruction, duration_minutes, mode, overlap_hint)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    recipe_id,
+                    i,
+                    task.get("instruction"),
+                    task.get("duration_minutes"),
+                    task.get("mode") or "active",
+                    task.get("overlap_hint"),
+                )
+                for i, task in enumerate(tasks)
+            ],
+        )
+
+
+def get_plan(conn: sqlite3.Connection, recipe_id: int) -> list[dict]:
+    """Return the cached plan tasks in order, or [] if none."""
+    rows = conn.execute(
+        "SELECT instruction, duration_minutes, mode, overlap_hint"
+        " FROM plan_steps WHERE recipe_id = ? ORDER BY position",
+        (recipe_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def list_recipes(

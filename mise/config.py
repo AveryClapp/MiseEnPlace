@@ -32,8 +32,6 @@ def load_config() -> dict:
         env = os.environ.get(key)
         if env:
             data[key] = env
-    if not CONFIG_PATH.exists() and not data:
-        raise MiseError("No config found. Run `mise init` first.")
     return data
 
 
@@ -42,7 +40,7 @@ def require(config: dict, key: str) -> str:
     value = config.get(key)
     if not value:
         raise MiseError(
-            f"{key} is not set. Run `mise init` or set the {key} "
+            f"{key} is not set. Run `mep init` or set the {key} "
             f"environment variable."
         )
     return value

@@ -4,9 +4,11 @@ import json
 
 import click
 
+from . import cook as cook_mod
 from . import db, ingest
-from .config import CONFIG_PATH, DB_PATH, MISE_DIR, load_config
+from .config import CONFIG_PATH, DB_PATH, MISE_DIR, load_config, model, require
 from .errors import MiseError
+from .plan import generate_plan
 
 
 @click.group()
@@ -119,6 +121,68 @@ def show(recipe_id):
     if data is None:
         raise MiseError(f"No recipe with id {recipe_id}.")
     _render(data)
+
+
+@cli.command()
+@click.argument("recipe_id", type=int)
+@click.option("--regenerate", is_flag=True, help="Rebuild the plan from scratch.")
+def plan(recipe_id, regenerate):
+    """Generate a cooking timeline for a recipe (experimental)."""
+    config = load_config()
+    db.init_db()  # ensure plan_steps exists on older databases
+    conn = db.connect()
+    data = db.get_recipe(conn, recipe_id)
+    if data is None:
+        raise MiseError(f"No recipe with id {recipe_id}.")
+    tasks = _ensure_plan(conn, config, data, regenerate)
+    _render_plan(data["recipe"], tasks)
+
+
+@cli.command()
+@click.argument("recipe_id", type=int)
+def cook(recipe_id):
+    """Walk through a recipe's timeline step by step (experimental)."""
+    config = load_config()
+    db.init_db()
+    conn = db.connect()
+    data = db.get_recipe(conn, recipe_id)
+    if data is None:
+        raise MiseError(f"No recipe with id {recipe_id}.")
+    tasks = _ensure_plan(conn, config, data, regenerate=False)
+    cook_mod.run(data["recipe"], tasks)
+
+
+def _ensure_plan(conn, config, data, regenerate):
+    """Return cached tasks, generating and caching them if needed."""
+    tasks = db.get_plan(conn, data["recipe"]["id"])
+    if tasks and not regenerate:
+        return tasks
+    if not data["steps"]:
+        raise MiseError("This recipe has no steps to plan.")
+    click.echo("Generating cook plan...")
+    tasks = generate_plan(
+        data, api_key=require(config, "ANTHROPIC_API_KEY"), model=model(config)
+    )
+    db.save_plan(conn, data["recipe"]["id"], tasks)
+    return tasks
+
+
+def _render_plan(recipe: dict, tasks: list[dict]) -> None:
+    name = recipe["dish_name"] or recipe["title"] or "recipe"
+    hands_on = sum(t["duration_minutes"] or 0 for t in tasks if t["mode"] == "active")
+    total = sum(t["duration_minutes"] or 0 for t in tasks)
+    click.echo()
+    click.secho(f"Cook plan: {name}", bold=True)
+    click.echo(
+        f"  hands-on ~{cook_mod.fmt_duration(hands_on)}"
+        f"  ·  total ~{cook_mod.fmt_duration(total)}\n"
+    )
+    for i, task in enumerate(tasks, start=1):
+        tag = f"{task['mode']} {cook_mod.fmt_duration(task['duration_minutes'])}"
+        click.echo(f"  {i:>2}  [{tag}]  {task['instruction']}")
+        if task.get("overlap_hint"):
+            click.echo(f"      └ {task['overlap_hint']}")
+    click.echo()
 
 
 def _render(data: dict) -> None:
