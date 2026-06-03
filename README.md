@@ -53,16 +53,32 @@ mep search "garlic confit"                           # full-text search
 mep list                                             # browse, newest first
 mep list --tag italian --limit 20                    # filter by tag
 mep show 42                                           # full recipe
+mep show 42 --servings 8                              # scale ingredient amounts
 
 mep plan 42                                          # AI cooking timeline (experimental)
+mep plan 42 --servings 8                             # ...scaled to 8 servings
 mep cook 42                                          # step-by-step walkthrough (experimental)
 ```
 
 `plan` makes one Claude call to reorder a recipe's steps into an efficient
-timeline (hands-on vs hands-off time, what to prep during waits) and caches it.
-`cook` walks that timeline one step at a time with a live pacing timer; you
-press Enter to advance. Re-run `plan --regenerate` to rebuild. Both are
-experimental: the timings are AI estimates.
+timeline and caches it. Each step is tagged hands-on or hands-off, with the
+ingredients and equipment it uses, a named timer for waits, and a "prep this
+during the wait" hint. The summary shows realistic wall-clock time (hands-off
+waits run in the background, not added end to end). Re-run `plan --regenerate`
+to rebuild.
+
+`cook` walks that timeline live: it opens with a mise en place gather + equipment
+list, then one step at a time. On a hands-off step, pressing Enter starts a named
+background timer that keeps counting while you move on to the next step (like a
+real kitchen timer); it rings when done. It also nudges you to preheat the oven a
+couple steps ahead. Ctrl-C stops cleanly and reports any timers still running.
+
+`--servings N` (on `show`, `plan`, `cook`) scales ingredient amounts to N
+servings. It is best-effort and display-only: only leading quantities are scaled,
+vague amounts like "a handful" pass through untouched, and nothing is saved. If
+the recipe's serving count can't be read, amounts are shown unscaled with a note.
+
+Both `plan` and `cook` are experimental: the timings are AI estimates.
 
 Channel ingestion is idempotent: videos already stored are skipped, so you can
 re-run it to pick up only what's new. Non-recipe videos and videos without

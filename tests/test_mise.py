@@ -12,9 +12,10 @@ import pytest
 
 os.environ["MISE_HOME"] = tempfile.mkdtemp()
 
-from mise import cook, db  # noqa: E402
+from mise import cook, db, scale  # noqa: E402
 from mise.errors import MiseError  # noqa: E402
 from mise.extract import _parse_json  # noqa: E402
+from mise.plan import _normalize_tasks  # noqa: E402
 from mise.transcript import extract_video_id  # noqa: E402
 
 
@@ -174,3 +175,139 @@ def test_status_line():
     assert cook.status_line(42, 0, passive=False) == "elapsed 0:42"
     # An active task ignores duration and reports elapsed.
     assert cook.status_line(70, 300, passive=False) == "elapsed 1:10"
+
+
+# --- quantity scaling ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "quantity,factor,expected",
+    [
+        ("200", 2, "400"),
+        ("1 1/2", 2, "3"),
+        ("3/4", 2, "1 1/2"),
+        ("2", 0.5, "1"),
+        ("3-4", 2, "6-8"),
+        ("3 to 4", 2, "6 to 8"),
+        ("1 (14 oz can)", 2, "2 (14 oz can)"),  # only leading amount scales
+        ("a handful", 2, "a handful"),  # vague passes through
+        ("to taste", 3, "to taste"),
+        ("200", 1, "200"),  # factor 1 is a no-op
+        (None, 2, None),
+    ],
+)
+def test_scale_quantity(quantity, factor, expected):
+    assert scale.scale_quantity(quantity, factor) == expected
+
+
+@pytest.mark.parametrize(
+    "servings,expected",
+    [("4", 4), ("4-6", 4), ("serves 8", 8), ("a lot", None), (None, None)],
+)
+def test_parse_base_servings(servings, expected):
+    assert scale.parse_base_servings(servings) == expected
+
+
+# --- plan normalization -------------------------------------------------------
+
+
+def test_normalize_tasks_coerces_and_cleans():
+    raw = [
+        {
+            "instruction": "  Chop onion  ",
+            "duration_minutes": "5",
+            "mode": "active",
+            "ingredients": [" 1 onion ", "", 2],
+            "equipment": ["knife"],
+            "timer_label": "  ",
+        },
+        {
+            "instruction": "Marinate",
+            "duration_minutes": -3,  # clamped to 0
+            "mode": "bogus",  # defaults to active
+            "overlap_hint": "make sauce",
+        },
+        {"instruction": "   "},  # dropped (empty)
+        "not a dict",  # dropped
+    ]
+    tasks = _normalize_tasks(raw)
+    assert len(tasks) == 2
+    assert tasks[0]["instruction"] == "Chop onion"
+    assert tasks[0]["duration_minutes"] == 5.0
+    assert tasks[0]["ingredients"] == ["1 onion", "2"]
+    assert tasks[0]["timer_label"] is None
+    assert tasks[1]["duration_minutes"] == 0.0
+    assert tasks[1]["mode"] == "active"
+
+
+def test_normalize_tasks_all_empty_raises():
+    with pytest.raises(MiseError):
+        _normalize_tasks([{"instruction": ""}, "junk"])
+
+
+# --- enriched plan storage round-trip -----------------------------------------
+
+
+def test_save_get_plan_preserves_enrichment():
+    db.init_db()
+    conn = db.connect()
+    rid = _seed_recipe(conn, "planvid0003")
+    tasks = [
+        {
+            "instruction": "roast",
+            "duration_minutes": 30,
+            "mode": "passive",
+            "overlap_hint": "make salad",
+            "ingredients": ["1 chicken"],
+            "equipment": ["oven"],
+            "timer_label": "chicken roast",
+        }
+    ]
+    db.save_plan(conn, rid, tasks)
+    got = db.get_plan(conn, rid)
+    assert got[0]["ingredients"] == ["1 chicken"]
+    assert got[0]["equipment"] == ["oven"]
+    assert got[0]["timer_label"] == "chicken roast"
+
+
+# --- cook helpers -------------------------------------------------------------
+
+
+def test_estimate_wallclock_overlaps_passive():
+    # 5m active, then a 120m passive wait that runs in the background while a
+    # final 10m active step proceeds: wall-clock = max(active spine, passive tail).
+    tasks = [
+        {"mode": "active", "duration_minutes": 5},
+        {"mode": "passive", "duration_minutes": 120},
+        {"mode": "active", "duration_minutes": 10},
+    ]
+    # active spine = 15; passive tail finishes at 5 + 120 = 125.
+    assert cook.estimate_wallclock_minutes(tasks) == 125
+
+
+def test_estimate_wallclock_all_active_is_sum():
+    tasks = [
+        {"mode": "active", "duration_minutes": 5},
+        {"mode": "active", "duration_minutes": 10},
+    ]
+    assert cook.estimate_wallclock_minutes(tasks) == 15
+
+
+def test_all_equipment_dedupes_in_order():
+    tasks = [
+        {"equipment": ["skillet", "oven"]},
+        {"equipment": ["oven", "tongs"]},
+        {"equipment": []},
+    ]
+    assert cook.all_equipment(tasks) == ["skillet", "oven", "tongs"]
+
+
+def test_preheat_cue_looks_ahead():
+    tasks = [
+        {"equipment": ["bowl"]},
+        {"equipment": ["oven"]},
+    ]
+    cue = cook.preheat_cue(tasks, 0)
+    assert cue is not None and "oven" in cue
+    # No cue once you're already on the heat step.
+    assert cook.preheat_cue(tasks, 1) is None
