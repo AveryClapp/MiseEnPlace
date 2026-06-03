@@ -17,6 +17,9 @@ dev = ["pytest>=8.0"]
 [project.scripts]
 mep = "mise.cli:main"
 
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
