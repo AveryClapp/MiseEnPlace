@@ -67,6 +67,17 @@ CREATE TABLE IF NOT EXISTS plan_steps (
     timer_label      TEXT
 );
 
+-- Cached AI breakdown of a recipe into its components (marinade, pita, etc.).
+CREATE TABLE IF NOT EXISTS recipe_components (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    recipe_id        INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+    position         INTEGER,
+    name             TEXT,
+    purpose          TEXT,
+    ingredients_json TEXT,
+    make_steps_json  TEXT
+);
+
 -- Contentless FTS index keyed by rowid = recipes.id.
 CREATE VIRTUAL TABLE IF NOT EXISTS recipe_fts USING fts5(
     dish_name, channel, ingredients, content=''
@@ -143,49 +154,44 @@ def insert_recipe(
             ),
         )
         recipe_id = cur.lastrowid
-
-        conn.executemany(
-            "INSERT INTO ingredients (recipe_id, name, quantity, unit, prep)"
-            " VALUES (?, ?, ?, ?, ?)",
-            [
-                (
-                    recipe_id,
-                    ing.get("name"),
-                    ing.get("quantity"),
-                    ing.get("unit"),
-                    ing.get("prep"),
-                )
-                for ing in ingredients
-                if ing.get("name")
-            ],
-        )
-
-        conn.executemany(
-            "INSERT INTO steps (recipe_id, step_number, instruction)"
-            " VALUES (?, ?, ?)",
-            [(recipe_id, i, text) for i, text in enumerate(steps, start=1) if text],
-        )
-
-        conn.executemany(
-            "INSERT INTO tags (recipe_id, tag) VALUES (?, ?)",
-            [(recipe_id, t) for t in tags if t],
-        )
-
-        ingredient_blob = " ".join(
-            ing.get("name", "") for ing in ingredients if ing.get("name")
-        )
-        conn.execute(
-            "INSERT INTO recipe_fts (rowid, dish_name, channel, ingredients)"
-            " VALUES (?, ?, ?, ?)",
-            (
-                recipe_id,
-                extracted.get("dish_name") or "",
-                channel or "",
-                ingredient_blob,
-            ),
-        )
+        _insert_children(conn, recipe_id, channel, extracted)
 
     return recipe_id
+
+
+def _insert_children(
+    conn: sqlite3.Connection, recipe_id: int, channel: str | None, extracted: dict
+) -> None:
+    """Insert a recipe's ingredients, steps, tags, and FTS row. Assumes any
+    prior children/FTS for this recipe_id have already been removed."""
+    ingredients = extracted.get("ingredients") or []
+    steps = extracted.get("steps") or []
+    tags = extracted.get("tags") or []
+
+    conn.executemany(
+        "INSERT INTO ingredients (recipe_id, name, quantity, unit, prep)"
+        " VALUES (?, ?, ?, ?, ?)",
+        [
+            (recipe_id, ing.get("name"), ing.get("quantity"), ing.get("unit"), ing.get("prep"))
+            for ing in ingredients
+            if ing.get("name")
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO steps (recipe_id, step_number, instruction) VALUES (?, ?, ?)",
+        [(recipe_id, i, text) for i, text in enumerate(steps, start=1) if text],
+    )
+    conn.executemany(
+        "INSERT INTO tags (recipe_id, tag) VALUES (?, ?)",
+        [(recipe_id, t) for t in tags if t],
+    )
+    ingredient_blob = " ".join(
+        ing.get("name", "") for ing in ingredients if ing.get("name")
+    )
+    conn.execute(
+        "INSERT INTO recipe_fts (rowid, dish_name, channel, ingredients) VALUES (?, ?, ?, ?)",
+        (recipe_id, extracted.get("dish_name") or "", channel or "", ingredient_blob),
+    )
 
 
 def get_recipe(conn: sqlite3.Connection, recipe_id: int) -> dict | None:
@@ -276,6 +282,102 @@ def get_plan(conn: sqlite3.Connection, recipe_id: int) -> list[dict]:
         }
         for r in rows
     ]
+
+
+def save_components(
+    conn: sqlite3.Connection, recipe_id: int, components: list[dict]
+) -> None:
+    """Replace any cached component breakdown for the recipe."""
+    with conn:
+        conn.execute("DELETE FROM recipe_components WHERE recipe_id = ?", (recipe_id,))
+        conn.executemany(
+            "INSERT INTO recipe_components"
+            " (recipe_id, position, name, purpose, ingredients_json, make_steps_json)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    recipe_id,
+                    i,
+                    comp.get("name"),
+                    comp.get("purpose"),
+                    json.dumps(comp.get("ingredients") or []),
+                    json.dumps(comp.get("make_steps") or []),
+                )
+                for i, comp in enumerate(components)
+            ],
+        )
+
+
+def get_components(conn: sqlite3.Connection, recipe_id: int) -> list[dict]:
+    """Return the cached component breakdown in order, or [] if none."""
+    rows = conn.execute(
+        "SELECT name, purpose, ingredients_json, make_steps_json"
+        " FROM recipe_components WHERE recipe_id = ? ORDER BY position",
+        (recipe_id,),
+    ).fetchall()
+    return [
+        {
+            "name": r["name"],
+            "purpose": r["purpose"],
+            "ingredients": json.loads(r["ingredients_json"] or "[]"),
+            "make_steps": json.loads(r["make_steps_json"] or "[]"),
+        }
+        for r in rows
+    ]
+
+
+def next_adapted_video_id(conn: sqlite3.Connection, base_video_id: str) -> str:
+    """A unique synthetic video_id for an adapted copy of base_video_id."""
+    candidate = f"{base_video_id}~adapted"
+    n = 1
+    while video_exists(conn, candidate):
+        n += 1
+        candidate = f"{base_video_id}~adapted{n}"
+    return candidate
+
+
+def replace_recipe_content(
+    conn: sqlite3.Connection, recipe_id: int, extracted: dict
+) -> None:
+    """Overwrite a recipe's ingredients, steps, tags, and descriptive fields
+    in place (keeping its id, video_id, channel, url, transcript). Refreshes the
+    FTS row and clears the now-stale cached plan and component breakdown."""
+    with conn:
+        old = conn.execute(
+            "SELECT dish_name, channel FROM recipes WHERE id = ?", (recipe_id,)
+        ).fetchone()
+        old_blob = " ".join(
+            r["name"]
+            for r in conn.execute(
+                "SELECT name FROM ingredients WHERE recipe_id = ? AND name IS NOT NULL"
+                " ORDER BY id",
+                (recipe_id,),
+            )
+        )
+        # Contentless FTS5 rows can't be UPDATEd/DELETEd normally; remove with
+        # the special 'delete' command using the originally-indexed values.
+        conn.execute(
+            "INSERT INTO recipe_fts (recipe_fts, rowid, dish_name, channel, ingredients)"
+            " VALUES ('delete', ?, ?, ?, ?)",
+            (recipe_id, old["dish_name"] or "", old["channel"] or "", old_blob),
+        )
+        conn.execute("DELETE FROM ingredients WHERE recipe_id = ?", (recipe_id,))
+        conn.execute("DELETE FROM steps WHERE recipe_id = ?", (recipe_id,))
+        conn.execute("DELETE FROM tags WHERE recipe_id = ?", (recipe_id,))
+        conn.execute(
+            "UPDATE recipes SET dish_name = ?, cook_time = ?, servings = ?,"
+            " difficulty = ? WHERE id = ?",
+            (
+                extracted.get("dish_name"),
+                extracted.get("cook_time"),
+                extracted.get("servings"),
+                extracted.get("difficulty"),
+                recipe_id,
+            ),
+        )
+        _insert_children(conn, recipe_id, old["channel"], extracted)
+        conn.execute("DELETE FROM plan_steps WHERE recipe_id = ?", (recipe_id,))
+        conn.execute("DELETE FROM recipe_components WHERE recipe_id = ?", (recipe_id,))
 
 
 def list_recipes(
