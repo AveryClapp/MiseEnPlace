@@ -40,8 +40,9 @@ def init():
         show_default=False,
     )
     llm_provider = click.prompt(
-        "LLM provider (anthropic or openai)",
-        default=existing.get("LLM_PROVIDER", "anthropic"),
+        "LLM provider (anthropic/openai; blank = auto-detect from keys)",
+        default=existing.get("LLM_PROVIDER", ""),
+        show_default=False,
     ).strip().lower()
     anthropic_key = click.prompt(
         "Anthropic API key (blank to skip)",

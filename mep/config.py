@@ -76,13 +76,17 @@ def require(config: dict, key: str) -> str:
 
 
 def provider(config: dict) -> str:
-    """Which LLM backend to use: 'anthropic' (default) or 'openai'."""
-    name = (config.get("LLM_PROVIDER") or "anthropic").strip().lower()
-    if name not in _API_KEY_FOR:
-        raise MepError(
-            f"Unknown LLM_PROVIDER '{name}'. Use 'anthropic' or 'openai'."
-        )
-    return name
+    """Which LLM backend to use. An explicit LLM_PROVIDER wins; otherwise infer
+    from whichever single API key is set. If both or neither are set, default to
+    'anthropic' (set LLM_PROVIDER to disambiguate)."""
+    name = (config.get("LLM_PROVIDER") or "").strip().lower()
+    if name:
+        if name not in _API_KEY_FOR:
+            raise MepError(f"Unknown LLM_PROVIDER '{name}'. Use 'anthropic' or 'openai'.")
+        return name
+    if config.get("OPENAI_API_KEY") and not config.get("ANTHROPIC_API_KEY"):
+        return "openai"
+    return "anthropic"
 
 
 def require_api_key(config: dict) -> str:

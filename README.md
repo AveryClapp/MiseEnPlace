@@ -7,11 +7,16 @@ Claude, and stores it in local SQLite. Everything stays on your machine.
 ## Install
 
 ```bash
-git clone <this-repo> mep && cd mep
+git clone https://github.com/AveryClapp/MiseEnPlace.git mep && cd mep
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
+Or simply
+
+```bash
+pip install mise-en-place
+```
 
 ## Setup
 
@@ -22,11 +27,15 @@ mep init
 This creates `~/.mep/`, prompts for the keys, and builds the database at
 `~/.mep/mep.db`.
 
-- **An LLM key** (required for extraction): Anthropic by default
-  (https://console.anthropic.com/ → API Keys). To use OpenAI instead, choose
-  `openai` at the provider prompt (or set `LLM_PROVIDER=openai`), supply an
-  OpenAI key, and install the extra: `pip install 'mise-en-place[openai]'`.
+- **An LLM key** (required for extraction): set `ANTHROPIC_API_KEY`
+  (https://console.anthropic.com/ → API Keys) or `OPENAI_API_KEY`. For OpenAI,
+  also install the extra: `pip install 'mise-en-place[openai]'`.
 - **YouTube Data API v3 key** (only needed for `--channel` ingestion): see below.
+
+**Provider selection:** if you set only one of the two LLM keys, that provider
+is used automatically. If you set both, it defaults to Anthropic; set
+`LLM_PROVIDER=openai` (or choose it at the `mep init` prompt) to pick OpenAI.
+An explicit `LLM_PROVIDER` always wins.
 
 Keys are stored in `~/.mep/config.json`. You can also set `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `LLM_PROVIDER`, or `YOUTUBE_API_KEY` as environment variables,

@@ -101,6 +101,15 @@ def test_provider_defaults_to_anthropic():
     assert config.provider({"LLM_PROVIDER": "OpenAI"}) == "openai"
 
 
+def test_provider_inferred_from_lone_key():
+    assert config.provider({"OPENAI_API_KEY": "o"}) == "openai"
+    assert config.provider({"ANTHROPIC_API_KEY": "a"}) == "anthropic"
+    # Both set -> default anthropic; neither -> default anthropic.
+    assert config.provider({"ANTHROPIC_API_KEY": "a", "OPENAI_API_KEY": "o"}) == "anthropic"
+    # An explicit provider always overrides inference.
+    assert config.provider({"LLM_PROVIDER": "openai", "ANTHROPIC_API_KEY": "a"}) == "openai"
+
+
 def test_provider_rejects_unknown():
     with pytest.raises(MepError):
         config.provider({"LLM_PROVIDER": "gemini"})
