@@ -1,4 +1,4 @@
-# mise
+# Mise En Place (mep)
 
 A personal CLI that turns YouTube cooking videos into a searchable recipe
 database. It pulls a video's transcript, extracts a structured recipe with
