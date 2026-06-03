@@ -80,6 +80,20 @@ set `MEP_HOME` to a temp dir before importing mep modules so they never touch
 a real `~/.mep`. Cover pure logic: id parsing, JSON parsing, DB round-trip,
 FTS search.
 
+## Releasing
+
+Published on PyPI as `mise-en-place` (import package and command stay `mep`).
+When changes warrant a release, bump `version` in `pyproject.toml` using
+**semver** (MAJOR.MINOR.PATCH: breaking / feature / fix), then tag and push:
+
+```
+git tag vX.Y.Z && git push origin vX.Y.Z
+```
+
+The tag triggers `.github/workflows/release.yml`, which builds and publishes via
+PyPI trusted publishing (OIDC, no tokens). The git tag must match the
+`pyproject.toml` version. Don't reuse or move a published version — bump instead.
+
 ## House rules
 
 - Keep it minimal. No speculative features, no abstractions for single-use code.
