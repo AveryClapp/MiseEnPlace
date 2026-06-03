@@ -7,10 +7,9 @@ are tolerated downstream via .get, so a partial response still stores cleanly.
 
 import json
 
-from anthropic import Anthropic
-
 from .config import EXTRACTION_MODEL
 from .errors import MiseError
+from .llm import create_message
 
 SYSTEM_PROMPT = """You extract one structured recipe from a YouTube cooking \
 video transcript.
@@ -54,18 +53,14 @@ def extract_recipe(
     api_key: str,
     model: str = EXTRACTION_MODEL,
 ) -> dict:
-    client = Anthropic(api_key=api_key)
     user_content = f"Video title: {title or '(unknown)'}\n\nTranscript:\n{transcript}"
-    try:
-        message = client.messages.create(
-            model=model,
-            max_tokens=2000,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_content}],
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise MiseError(f"Claude extraction failed: {exc}")
-
+    message = create_message(
+        api_key,
+        model=model,
+        max_tokens=2000,
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_content}],
+    )
     text = "".join(
         block.text for block in message.content if getattr(block, "type", None) == "text"
     )
