@@ -46,8 +46,8 @@ key. It is only required to walk a channel's uploads.
 
 ```bash
 mep add https://www.youtube.com/watch?v=VIDEO_ID    # one video
-mep add --channel @kenjilopezalt --limit 10         # latest 10 from a channel
-mep add --channel @kenjilopezalt                     # whole channel
+mep add --channel @JKenjiLopezAlt --limit 10        # latest 10 from a channel
+mep add --channel @JKenjiLopezAlt                    # whole channel
 
 mep search "garlic confit"                           # full-text search
 mep list                                             # browse, newest first
@@ -98,6 +98,27 @@ it doesn't reinvent it).
 Channel ingestion is idempotent: videos already stored are skipped, so you can
 re-run it to pick up only what's new. Non-recipe videos and videos without
 transcripts are stored as empty entries (not errors) so they aren't re-fetched.
+
+## Channels to try
+
+Recipe-forward channels that work well (most videos are real walkthroughs with
+transcripts). Single-video adds need no key; the `--channel` walk needs a YouTube
+Data API key (see above).
+
+| Channel | Handle |
+| --- | --- |
+| Babish Culinary Universe | `@babishculinaryuniverse` |
+| J. Kenji López-Alt | `@JKenjiLopezAlt` |
+| Joshua Weissman | `@joshuaweissman` |
+| Adam Ragusea | `@aragusea` |
+| Ethan Chlebowski | `@EthanChlebowski` |
+| Brian Lagerstrom | `@brianlagerstrom` |
+| Food Wishes (Chef John) | `@foodwishes` |
+
+```bash
+mep add https://www.youtube.com/watch?v=iErqWGwso7o   # a single Babish video, no key needed
+mep add --channel @aragusea --limit 5                 # latest 5 from Adam Ragusea
+```
 
 ## How it works
 
