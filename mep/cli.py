@@ -7,7 +7,7 @@ import click
 
 from . import adapt as adapt_mod
 from . import cook as cook_mod
-from . import db, ingest, scale, shopping
+from . import classify, db, ingest, scale, shopping
 from .components import analyze_components
 from .gaps import find_gaps
 from .nutrition import estimate_macros
@@ -109,12 +109,15 @@ def add(url, channel, limit):
     elif status == "no_transcript":
         click.echo(f"Stored (no transcript available) as recipe {results[0][0]}.")
     elif len(results) == 1:
-        recipe_id, dish = results[0]
+        recipe_id, dish, meal_type, health = results[0]
         click.echo(f"Added '{dish or 'untitled'}' as recipe {recipe_id}.")
+        if meal_type or health is not None:
+            click.echo(f"  (classified: {_classification_str(meal_type, health)})")
     else:
         click.echo(f"Added {len(results)} recipes from this video:")
-        for recipe_id, dish in results:
-            click.echo(f"  {recipe_id:>4}  {dish or 'untitled'}")
+        for recipe_id, dish, meal_type, health in results:
+            suffix = _classification_suffix(meal_type, health)
+            click.echo(f"  {recipe_id:>4}  {dish or 'untitled'}{suffix}")
 
 
 @cli.command()
@@ -210,6 +213,60 @@ def shopping_list(recipe_ids):
     click.echo("Building shopping list...")
     sections = shopping.build_list(recipes, config=config)
     _render_shopping(recipes, sections)
+
+
+@cli.command()
+@click.option(
+    "-t", "--type", "meal_type", type=click.Choice(classify.MEAL_TYPES), default=None,
+    help="Only this meal type.",
+)
+@click.option("--healthy", is_flag=True, help="Only healthy meals (health score >= 7).")
+@click.option("--indulgent", is_flag=True, help="Only indulgent meals (health score <= 4).")
+@click.option("--min-health", type=click.IntRange(1, 10), default=None, help="Lowest health score.")
+@click.option("--max-health", type=click.IntRange(1, 10), default=None, help="Highest health score.")
+@click.option(
+    "-i", "--ingredient", "ingredients", multiple=True,
+    help="Must use this ingredient (repeatable).",
+)
+@click.option("-n", "--count", type=int, default=1, help="How many to pick (default 1).")
+def discover(meal_type, healthy, indulgent, min_health, max_health, ingredients, count):
+    """Pick a random recipe, optionally by type, health, or ingredients."""
+    conn = db.connect()
+    lo, hi = _health_range(healthy, indulgent, min_health, max_health)
+    wants = [i.strip() for i in ingredients if i.strip()]
+    rows = db.discover(
+        conn, meal_type=meal_type, min_health=lo, max_health=hi,
+        ingredients=wants, count=max(1, count),
+    )
+    if not rows:
+        click.echo("No matching recipes.")
+        _classify_hint(conn, meal_type, lo, hi)
+        return
+    if count == 1 and len(rows) == 1:
+        _render(db.get_recipe(conn, rows[0]["id"]))
+    else:
+        _render_discover(rows)
+    _classify_hint(conn, meal_type, lo, hi)
+
+
+@cli.command(name="classify")
+@click.option("--all", "reclassify", is_flag=True, help="Re-classify every recipe, not just new ones.")
+def classify_cmd(reclassify):
+    """Fill in meal type and health score for recipes (used by `discover`)."""
+    config = load_config()
+    conn = db.connect()
+    ids = db.recipe_ids_for_classify(conn, include_classified=reclassify)
+    if not ids:
+        click.echo("All recipes are already classified.")
+        return
+    require_api_key(config)
+    for rid in ids:
+        data = db.get_recipe(conn, rid)
+        cls = classify.classify_recipe(data, config=config)
+        db.save_classification(conn, rid, cls["meal_type"], cls["health_score"])
+        name = data["recipe"]["dish_name"] or data["recipe"]["title"] or "recipe"
+        click.echo(f"  {rid:>4}  {name}  ->  {_classification_str(cls['meal_type'], cls['health_score'])}")
+    click.echo(f"Classified {len(ids)} recipe(s).")
 
 
 @cli.command()
@@ -621,6 +678,50 @@ def _adapted_data(orig: dict, adapted: dict) -> dict:
     return {"recipe": recipe, "ingredients": ingredients, "steps": steps, "tags": tags}
 
 
+def _classification_str(meal_type, health) -> str:
+    bits = []
+    if meal_type:
+        bits.append(meal_type)
+    if health is not None:
+        bits.append(f"health {health}")
+    return ", ".join(bits) if bits else "unclassified"
+
+
+def _classification_suffix(meal_type, health) -> str:
+    bits = [b for b in (meal_type, f"health {health}" if health is not None else None) if b]
+    return ("   " + " · ".join(bits)) if bits else ""
+
+
+def _health_range(healthy, indulgent, min_health, max_health):
+    """Resolve the health filter. Explicit --min/--max win; otherwise --healthy
+    means >= 7 and --indulgent means <= 4."""
+    lo = min_health if min_health is not None else (7 if healthy else None)
+    hi = max_health if max_health is not None else (4 if indulgent else None)
+    return lo, hi
+
+
+def _render_discover(rows) -> None:
+    click.echo()
+    for r in rows:
+        name = r["dish_name"] or r["title"] or "(untitled)"
+        suffix = _classification_suffix(r["meal_type"], r["health_score"])
+        click.echo(f"  {r['id']:>4}  {name}{suffix}  —  {r['channel'] or 'unknown'}")
+    click.echo()
+
+
+def _classify_hint(conn, meal_type, lo, hi) -> None:
+    """Nudge the user to backfill when a type/health filter could be hiding
+    recipes that simply haven't been classified yet."""
+    if not (meal_type or lo is not None or hi is not None):
+        return
+    n = len(db.recipe_ids_for_classify(conn, include_classified=False))
+    if n:
+        click.secho(
+            f"  ({n} recipe(s) not yet classified — run `mep classify` to include them.)",
+            fg="yellow",
+        )
+
+
 def _to_markdown(data: dict) -> str:
     """Render a recipe as a portable Markdown card. Pure formatting."""
     r = data["recipe"]
@@ -683,6 +784,10 @@ def _render(data: dict, target_servings=None) -> None:
     meta = []
     if r["channel"]:
         meta.append(r["channel"])
+    if r["meal_type"]:
+        meta.append(r["meal_type"])
+    if r["health_score"] is not None:
+        meta.append(f"health {r['health_score']}/10")
     for field in ("cook_time", "servings", "difficulty"):
         if r[field]:
             meta.append(f"{field.replace('_', ' ')}: {r[field]}")

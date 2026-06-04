@@ -8,6 +8,7 @@ videos already stored and throttling transcript requests.
 import time
 
 from . import db, youtube
+from .classify import classify_recipe
 from .config import require
 from .extract import extract_recipes
 from .transcript import extract_video_id, fetch_transcript
@@ -21,12 +22,14 @@ _EMPTY = {"dish_name": None, "ingredients": [], "steps": [], "tags": []}
 # real video_id (the idempotency anchor); extras get a '#N' suffix so the UNIQUE
 # constraint holds. Checking the base video_id alone still tells us the whole
 # video was already ingested.
-Result = tuple[int, str | None]  # (recipe_id, dish_name)
+Result = tuple[int, str | None, str | None, int | None]
+# (recipe_id, dish_name, meal_type, health_score)
 
 
 def ingest_one(conn, config, video_id, title, channel) -> tuple[str, list[Result]]:
     """Ingest a single video. Returns (status, results) where results is a list
-    of (recipe_id, dish_name). status is one of: 'added', 'no_transcript'."""
+    of (recipe_id, dish_name, meal_type, health_score). status is one of:
+    'added', 'no_transcript'."""
     url = f"https://www.youtube.com/watch?v={video_id}"
     transcript = fetch_transcript(video_id)
 
@@ -40,7 +43,7 @@ def ingest_one(conn, config, video_id, title, channel) -> tuple[str, list[Result
             raw_transcript=None,
             extracted=_EMPTY,
         )
-        return "no_transcript", [(recipe_id, None)]
+        return "no_transcript", [(recipe_id, None, None, None)]
 
     recipes = extract_recipes(transcript, title=title, config=config) or [_EMPTY]
     results: list[Result] = []
@@ -55,7 +58,12 @@ def ingest_one(conn, config, video_id, title, channel) -> tuple[str, list[Result
             raw_transcript=transcript if i == 0 else None,
             extracted=extracted,
         )
-        results.append((recipe_id, extracted.get("dish_name")))
+        meal_type = health = None
+        if extracted.get("dish_name"):
+            cls = classify_recipe(db.get_recipe(conn, recipe_id), config=config)
+            meal_type, health = cls["meal_type"], cls["health_score"]
+            db.save_classification(conn, recipe_id, meal_type, health)
+        results.append((recipe_id, extracted.get("dish_name"), meal_type, health))
     return "added", results
 
 

@@ -13,6 +13,7 @@ import pytest
 os.environ["MEP_HOME"] = tempfile.mkdtemp()
 
 from mep import adapt, cli, config, cook, db, ingest, scale, shopping  # noqa: E402
+from mep.classify import _normalize as _normalize_classification  # noqa: E402
 from mep.components import _normalize_components  # noqa: E402
 from mep.gaps import _normalize as _normalize_gaps  # noqa: E402
 from mep.nutrition import _normalize as _normalize_macros  # noqa: E402
@@ -521,17 +522,24 @@ def test_ingest_one_stores_multiple_recipes(monkeypatch):
             {"dish_name": "Salad", "ingredients": [{"name": "lettuce"}], "steps": ["toss"], "tags": []},
         ],
     )
+    monkeypatch.setattr(
+        ingest, "classify_recipe",
+        lambda data, *, config: {"meal_type": "dinner", "health_score": 6},
+    )
     status, results = ingest.ingest_one(conn, {}, "multivid001", "Two Dishes", "Chef")
     assert status == "added"
     assert len(results) == 2
     # First recipe anchors the real video_id; the extra gets a '#2' suffix.
     assert db.video_exists(conn, "multivid001")
     assert db.video_exists(conn, "multivid001#2")
-    dishes = {db.get_recipe(conn, rid)["recipe"]["dish_name"] for rid, _ in results}
+    dishes = {db.get_recipe(conn, rid)["recipe"]["dish_name"] for rid, *_ in results}
     assert dishes == {"Pasta", "Salad"}
+    # Classified at ingest and stored on the row.
+    assert results[0][2:] == ("dinner", 6)
+    assert db.get_recipe(conn, results[0][0])["recipe"]["meal_type"] == "dinner"
+    assert db.get_recipe(conn, results[0][0])["recipe"]["health_score"] == 6
     # Only the first row carries the (large) transcript.
-    first_id = results[0][0]
-    assert db.get_recipe(conn, first_id)["recipe"]["raw_transcript"] == "transcript text"
+    assert db.get_recipe(conn, results[0][0])["recipe"]["raw_transcript"] == "transcript text"
     assert db.get_recipe(conn, results[1][0])["recipe"]["raw_transcript"] is None
 
 
@@ -540,10 +548,16 @@ def test_ingest_one_non_recipe_stores_single_stub(monkeypatch):
     conn = db.connect()
     monkeypatch.setattr(ingest, "fetch_transcript", lambda vid: "just vlog talk")
     monkeypatch.setattr(ingest, "extract_recipes", lambda t, *, title, config: [])
+    # A non-recipe stub has no dish_name, so classification is skipped entirely.
+    monkeypatch.setattr(
+        ingest, "classify_recipe",
+        lambda data, *, config: pytest.fail("should not classify a non-recipe stub"),
+    )
     status, results = ingest.ingest_one(conn, {}, "vlogvid0001", "My Day", "Chef")
     assert status == "added"
     assert len(results) == 1
     assert db.get_recipe(conn, results[0][0])["recipe"]["dish_name"] is None
+    assert results[0][2:] == (None, None)
 
 
 # --- gap check ----------------------------------------------------------------
@@ -564,6 +578,87 @@ def test_gaps_cache_distinguishes_unchecked_from_clean():
     assert db.get_gaps(conn, rid) == []  # checked, looked complete
     db.save_gaps(conn, rid, ["a step has no temperature"])
     assert db.get_gaps(conn, rid) == ["a step has no temperature"]
+
+
+# --- classification + discovery -----------------------------------------------
+
+
+def test_normalize_classification_coerces_and_validates():
+    out = _normalize_classification({"meal_type": " Dinner ", "health_score": "7"})
+    assert out == {"meal_type": "dinner", "health_score": 7}
+    # Out-of-range clamps; unknown meal type -> None; junk -> None.
+    assert _normalize_classification({"meal_type": "brunch", "health_score": 99}) == {
+        "meal_type": None, "health_score": 10,
+    }
+    assert _normalize_classification({"meal_type": 5, "health_score": "x"}) == {
+        "meal_type": None, "health_score": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "healthy,indulgent,mn,mx,expected",
+    [
+        (False, False, None, None, (None, None)),  # no filter
+        (True, False, None, None, (7, None)),       # --healthy
+        (False, True, None, None, (None, 4)),       # --indulgent
+        (True, False, 5, 8, (5, 8)),                 # explicit overrides shortcut
+    ],
+)
+def test_health_range(healthy, indulgent, mn, mx, expected):
+    assert cli._health_range(healthy, indulgent, mn, mx) == expected
+
+
+def test_recipe_ids_for_classify_tracks_unclassified():
+    db.init_db()
+    conn = db.connect()
+    a = _seed_recipe(conn, "classvid001")
+    b = _seed_recipe(conn, "classvid002")
+    assert set(db.recipe_ids_for_classify(conn)) >= {a, b}
+    db.save_classification(conn, a, "dinner", 6)
+    pending = db.recipe_ids_for_classify(conn)
+    assert a not in pending and b in pending
+    assert a in db.recipe_ids_for_classify(conn, include_classified=True)
+
+
+def _seed_classified(conn, video_id, meal_type, health, ingredients):
+    rid = db.insert_recipe(
+        conn, video_id=video_id, title="t", channel="c", url="u", raw_transcript=None,
+        extracted={
+            "dish_name": video_id, "tags": [], "steps": ["do"],
+            "ingredients": [{"name": n, "quantity": None, "unit": None, "prep": None} for n in ingredients],
+        },
+    )
+    db.save_classification(conn, rid, meal_type, health)
+    return rid
+
+
+def test_discover_filters_by_type_health_and_ingredient():
+    db.init_db()
+    conn = db.connect()
+    bfast = _seed_classified(conn, "disc_bfast", "breakfast", 9, ["oats", "banana"])
+    dinner = _seed_classified(conn, "disc_dinner", "dinner", 3, ["beef", "cheese"])
+    salad = _seed_classified(conn, "disc_salad", "dinner", 8, ["lettuce", "chicken"])
+
+    def ids(**kw):
+        return {r["id"] for r in db.discover(conn, count=99, **kw)}
+
+    # All three are reachable with no filter.
+    assert {bfast, dinner, salad} <= ids()
+    assert ids(meal_type="breakfast") & {bfast, dinner, salad} == {bfast}
+    assert ids(min_health=7) & {bfast, dinner, salad} == {bfast, salad}  # healthy
+    assert ids(max_health=4) & {bfast, dinner, salad} == {dinner}        # indulgent
+    assert ids(meal_type="dinner", min_health=7) & {bfast, dinner, salad} == {salad}
+    assert ids(ingredients=["chicken"]) & {bfast, dinner, salad} == {salad}
+    # Must include *all* listed ingredients.
+    assert ids(ingredients=["chicken", "beef"]) & {bfast, dinner, salad} == set()
+
+
+def test_discover_count_limits_results():
+    db.init_db()
+    conn = db.connect()
+    for i in range(5):
+        _seed_classified(conn, f"disc_n{i}", "lunch", 5, ["rice"])
+    assert len(db.discover(conn, meal_type="lunch", count=3)) == 3
 
 
 # --- delete -------------------------------------------------------------------

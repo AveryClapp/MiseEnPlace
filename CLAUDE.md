@@ -34,6 +34,7 @@ mep/
   adapt.py       Recipe -> Claude -> rewrite around what you have (experimental)
   nutrition.py   Recipe -> Claude -> macro estimate (lazy, cached)
   gaps.py        Recipe -> Claude -> likely missing-step/gap flags (lazy, cached)
+  classify.py    Recipe -> Claude -> meal_type + 1-10 health_score (for discover)
   shopping.py    Recipes -> Claude -> one combined grocery list (display-only)
 tests/           Offline unit tests (no network, no keys)
 docs/plans/      Design docs
@@ -58,6 +59,12 @@ docs/plans/      Design docs
 - **Non-recipe and no-transcript videos are stored as empty stubs**
   (`dish_name = NULL`, empty children), never errors. This stops channel syncs
   from re-fetching duds.
+- **Classification (`meal_type`, `health_score`) powers `discover`.** Each real
+  recipe is classified by a small `classify.py` call at ingest; stubs are
+  skipped. `mep classify` backfills recipes with `meal_type IS NULL` (or `--all`
+  to redo). `db.discover` filters on these columns, so unclassified recipes are
+  naturally excluded from type/health filters. Cleared on overwrite alongside
+  the macro/gap caches.
 - **FTS:** `recipe_fts` is a contentless FTS5 table keyed by `rowid = recipes.id`,
   populated inside the same transaction as the recipe insert. If you add a
   searchable field, update both the schema and `insert_recipe`. Contentless rows

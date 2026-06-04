@@ -19,6 +19,8 @@ _RECIPE_COLUMNS = {
     "times_cooked": "INTEGER NOT NULL DEFAULT 0",
     "macros_json": "TEXT",
     "gaps_json": "TEXT",
+    "meal_type": "TEXT",
+    "health_score": "INTEGER",
 }
 
 SCHEMA = """
@@ -36,7 +38,9 @@ CREATE TABLE IF NOT EXISTS recipes (
     created_at     TEXT DEFAULT (datetime('now')),
     times_cooked   INTEGER NOT NULL DEFAULT 0,
     macros_json    TEXT,
-    gaps_json      TEXT
+    gaps_json      TEXT,
+    meal_type      TEXT,
+    health_score   INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS ingredients (
@@ -173,6 +177,29 @@ def get_gaps(conn: sqlite3.Connection, recipe_id: int) -> list | None:
     if row is None or row["gaps_json"] is None:
         return None
     return json.loads(row["gaps_json"])
+
+
+def save_classification(
+    conn: sqlite3.Connection, recipe_id: int, meal_type: str | None, health_score: int | None
+) -> None:
+    """Store a recipe's meal type and 1-10 health score (either may be None)."""
+    with conn:
+        conn.execute(
+            "UPDATE recipes SET meal_type = ?, health_score = ? WHERE id = ?",
+            (meal_type, health_score, recipe_id),
+        )
+
+
+def recipe_ids_for_classify(
+    conn: sqlite3.Connection, include_classified: bool = False
+) -> list[int]:
+    """Ids of real recipes (a dish_name) to classify. By default only those not
+    yet classified (meal_type IS NULL); with include_classified, all of them."""
+    sql = "SELECT id FROM recipes WHERE dish_name IS NOT NULL"
+    if not include_classified:
+        sql += " AND meal_type IS NULL"
+    sql += " ORDER BY id"
+    return [r["id"] for r in conn.execute(sql)]
 
 
 def increment_cook_count(conn: sqlite3.Connection, recipe_id: int) -> int:
@@ -449,7 +476,8 @@ def replace_recipe_content(
         conn.execute("DELETE FROM plan_steps WHERE recipe_id = ?", (recipe_id,))
         conn.execute("DELETE FROM recipe_components WHERE recipe_id = ?", (recipe_id,))
         conn.execute(
-            "UPDATE recipes SET macros_json = NULL, gaps_json = NULL WHERE id = ?",
+            "UPDATE recipes SET macros_json = NULL, gaps_json = NULL,"
+            " meal_type = NULL, health_score = NULL WHERE id = ?",
             (recipe_id,),
         )
 
@@ -477,6 +505,43 @@ def delete_recipe(conn: sqlite3.Connection, recipe_id: int) -> None:
             (recipe_id, old["dish_name"] or "", old["channel"] or "", old_blob),
         )
         conn.execute("DELETE FROM recipes WHERE id = ?", (recipe_id,))
+
+
+def discover(
+    conn: sqlite3.Connection,
+    *,
+    meal_type: str | None = None,
+    min_health: int | None = None,
+    max_health: int | None = None,
+    ingredients: list[str] | tuple[str, ...] = (),
+    count: int = 1,
+) -> list[sqlite3.Row]:
+    """Randomly pick up to `count` real recipes matching the given filters. A
+    recipe must include every listed ingredient (substring match). Recipes not
+    yet classified are naturally excluded by the meal_type/health filters."""
+    where = ["dish_name IS NOT NULL"]
+    params: list = []
+    if meal_type:
+        where.append("meal_type = ?")
+        params.append(meal_type)
+    if min_health is not None:
+        where.append("health_score >= ?")
+        params.append(min_health)
+    if max_health is not None:
+        where.append("health_score <= ?")
+        params.append(max_health)
+    for ing in ingredients:
+        where.append(
+            "EXISTS (SELECT 1 FROM ingredients i"
+            " WHERE i.recipe_id = recipes.id AND i.name LIKE ?)"
+        )
+        params.append(f"%{ing}%")
+    sql = (
+        "SELECT id, dish_name, channel, title, meal_type, health_score FROM recipes"
+        " WHERE " + " AND ".join(where) + " ORDER BY RANDOM() LIMIT ?"
+    )
+    params.append(count)
+    return conn.execute(sql, params).fetchall()
 
 
 def list_recipes(

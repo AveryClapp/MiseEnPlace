@@ -63,6 +63,12 @@ mep add --channel @JKenjiLopezAlt                    # whole channel
 mep search "garlic confit"                           # full-text search
 mep list                                             # browse, newest first
 mep list --tag italian --limit 20                    # filter by tag
+
+mep discover                                         # pick a random recipe
+mep discover --type dinner --healthy                 # a random healthy dinner
+mep discover --indulgent                             # something to pig out on
+mep discover -i chicken -i garlic -n 3               # 3 that use both
+mep classify                                         # backfill meal type + health
 mep show 42                                           # full recipe
 mep show 42 --servings 8                              # scale ingredient amounts
 mep show 42 --macros                                 # estimated nutrition breakdown
@@ -120,6 +126,20 @@ in memory for a single cook without saving anything. These are experimental and
 use Claude; the rewrite is intentionally light (it shifts and trims the recipe,
 it doesn't reinvent it).
 
+`discover` picks a random recipe from your collection, optionally filtered. Use
+`--type` (breakfast, lunch, dinner, snack, dessert), `--healthy` (health score
+>= 7) or `--indulgent` (<= 4) — or `--min-health`/`--max-health` for an exact
+range — and `-i/--ingredient` (repeatable) to require ingredients you want to
+use. `-n/--count` returns more than one; with no filters it is completely
+random. A single pick prints the full recipe; several print as a list.
+
+To support that, every recipe is given a meal type and a 1-10 health score (10 =
+lean and vegetable-forward, 1 = rich and indulgent) by a small model call at
+`add` time. They show up in `mep show` and drive `discover`'s filters. Recipes
+added before this feature won't have them yet, so run `mep classify` once to
+backfill (or `mep classify --all` to redo every recipe); `discover` reminds you
+when a type/health filter could be hiding unclassified recipes.
+
 `show --check` makes one model call to flag likely holes in a recipe: a step
 that uses an ingredient never listed, a cooking step missing an obvious time or
 temperature, an apparent skipped step. It only points at gaps; it never invents
@@ -150,8 +170,9 @@ transcripts are stored as empty entries (not errors) so they aren't re-fetched.
 Everything runs on your own API key, so you pay the provider directly. The only
 cost is the model calls; storage and search are local and free.
 
-- **Adding a video** is the main cost: one extraction call, empirically around
-  **$0.05** with the default Anthropic model, more for very long videos. A
+- **Adding a video** is the main cost: one extraction call (empirically around
+  **$0.05** with the default Anthropic model, more for very long videos) plus a
+  small classification call per recipe for meal type and health score. A
   `--channel` walk is just this times the number of videos.
 - **On-demand features** (`plan`, `show --parts`, `show --macros`,
   `show --check`, `shopping-list`, `adapt`, and `cook` with `--have`/`--sub`)
