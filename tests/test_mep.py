@@ -12,11 +12,12 @@ import pytest
 
 os.environ["MEP_HOME"] = tempfile.mkdtemp()
 
-from mep import adapt, cli, config, cook, db, scale, shopping  # noqa: E402
+from mep import adapt, cli, config, cook, db, ingest, scale, shopping  # noqa: E402
 from mep.components import _normalize_components  # noqa: E402
+from mep.gaps import _normalize as _normalize_gaps  # noqa: E402
 from mep.nutrition import _normalize as _normalize_macros  # noqa: E402
 from mep.errors import MepError  # noqa: E402
-from mep.extract import _parse_json  # noqa: E402
+from mep.extract import _parse_json, _parse_recipes  # noqa: E402
 from mep.plan import _normalize_tasks  # noqa: E402
 from mep.transcript import extract_video_id  # noqa: E402
 
@@ -489,6 +490,82 @@ def test_save_get_components_roundtrip():
     assert db.get_components(conn, rid) == []
 
 
+# --- multi-recipe extraction --------------------------------------------------
+
+
+def test_parse_recipes_keeps_named_drops_rest():
+    data = {
+        "recipes": [
+            {"dish_name": "Pasta", "steps": ["boil"]},
+            {"dish_name": None},  # non-recipe signal -> dropped
+            "junk",  # not a dict -> dropped
+        ]
+    }
+    assert _parse_recipes(data) == [{"dish_name": "Pasta", "steps": ["boil"]}]
+
+
+def test_parse_recipes_handles_missing_or_bad_shape():
+    assert _parse_recipes({}) == []
+    assert _parse_recipes({"recipes": "nope"}) == []
+    assert _parse_recipes({"recipes": []}) == []
+
+
+def test_ingest_one_stores_multiple_recipes(monkeypatch):
+    db.init_db()
+    conn = db.connect()
+    monkeypatch.setattr(ingest, "fetch_transcript", lambda vid: "transcript text")
+    monkeypatch.setattr(
+        ingest, "extract_recipes",
+        lambda t, *, title, config: [
+            {"dish_name": "Pasta", "ingredients": [{"name": "noodles"}], "steps": ["boil"], "tags": []},
+            {"dish_name": "Salad", "ingredients": [{"name": "lettuce"}], "steps": ["toss"], "tags": []},
+        ],
+    )
+    status, results = ingest.ingest_one(conn, {}, "multivid001", "Two Dishes", "Chef")
+    assert status == "added"
+    assert len(results) == 2
+    # First recipe anchors the real video_id; the extra gets a '#2' suffix.
+    assert db.video_exists(conn, "multivid001")
+    assert db.video_exists(conn, "multivid001#2")
+    dishes = {db.get_recipe(conn, rid)["recipe"]["dish_name"] for rid, _ in results}
+    assert dishes == {"Pasta", "Salad"}
+    # Only the first row carries the (large) transcript.
+    first_id = results[0][0]
+    assert db.get_recipe(conn, first_id)["recipe"]["raw_transcript"] == "transcript text"
+    assert db.get_recipe(conn, results[1][0])["recipe"]["raw_transcript"] is None
+
+
+def test_ingest_one_non_recipe_stores_single_stub(monkeypatch):
+    db.init_db()
+    conn = db.connect()
+    monkeypatch.setattr(ingest, "fetch_transcript", lambda vid: "just vlog talk")
+    monkeypatch.setattr(ingest, "extract_recipes", lambda t, *, title, config: [])
+    status, results = ingest.ingest_one(conn, {}, "vlogvid0001", "My Day", "Chef")
+    assert status == "added"
+    assert len(results) == 1
+    assert db.get_recipe(conn, results[0][0])["recipe"]["dish_name"] is None
+
+
+# --- gap check ----------------------------------------------------------------
+
+
+def test_normalize_gaps_cleans_and_tolerates():
+    assert _normalize_gaps({"gaps": [" missing temp ", "", 2]}) == ["missing temp", "2"]
+    assert _normalize_gaps({}) == []
+    assert _normalize_gaps({"gaps": "not a list"}) == []
+
+
+def test_gaps_cache_distinguishes_unchecked_from_clean():
+    db.init_db()
+    conn = db.connect()
+    rid = _seed_recipe(conn, "gapsvid0001")
+    assert db.get_gaps(conn, rid) is None  # never checked
+    db.save_gaps(conn, rid, [])
+    assert db.get_gaps(conn, rid) == []  # checked, looked complete
+    db.save_gaps(conn, rid, ["a step has no temperature"])
+    assert db.get_gaps(conn, rid) == ["a step has no temperature"]
+
+
 # --- delete -------------------------------------------------------------------
 
 
@@ -633,6 +710,7 @@ def test_replace_recipe_content_swaps_and_clears_caches():
     )
     db.save_plan(conn, rid, [{"instruction": "a", "duration_minutes": 1, "mode": "active"}])
     db.save_components(conn, rid, [{"name": "Pita", "purpose": "", "ingredients": [], "make_steps": [1]}])
+    db.save_gaps(conn, rid, ["no temperature given"])
     assert any(r["id"] == rid for r in db.search(conn, "pita"))
 
     db.replace_recipe_content(
@@ -655,5 +733,6 @@ def test_replace_recipe_content_swaps_and_clears_caches():
     # Stale caches cleared; FTS reflects the new ingredient, not the old one.
     assert db.get_plan(conn, rid) == []
     assert db.get_components(conn, rid) == []
+    assert db.get_gaps(conn, rid) is None
     assert any(r["id"] == rid for r in db.search(conn, "store-bought"))
     assert not any(r["id"] == rid for r in db.search(conn, "flour"))

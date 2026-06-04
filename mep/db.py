@@ -18,6 +18,7 @@ _PLAN_COLUMNS = {
 _RECIPE_COLUMNS = {
     "times_cooked": "INTEGER NOT NULL DEFAULT 0",
     "macros_json": "TEXT",
+    "gaps_json": "TEXT",
 }
 
 SCHEMA = """
@@ -34,7 +35,8 @@ CREATE TABLE IF NOT EXISTS recipes (
     raw_transcript TEXT,
     created_at     TEXT DEFAULT (datetime('now')),
     times_cooked   INTEGER NOT NULL DEFAULT 0,
-    macros_json    TEXT
+    macros_json    TEXT,
+    gaps_json      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS ingredients (
@@ -150,6 +152,27 @@ def get_macros(conn: sqlite3.Connection, recipe_id: int) -> dict | None:
     if row is None or row["macros_json"] is None:
         return None
     return json.loads(row["macros_json"])
+
+
+def save_gaps(conn: sqlite3.Connection, recipe_id: int, gaps: list) -> None:
+    """Cache a recipe's gap check. An empty list is stored as a real result
+    (checked, nothing found), distinct from NULL (never checked)."""
+    with conn:
+        conn.execute(
+            "UPDATE recipes SET gaps_json = ? WHERE id = ?",
+            (json.dumps(gaps), recipe_id),
+        )
+
+
+def get_gaps(conn: sqlite3.Connection, recipe_id: int) -> list | None:
+    """Return the cached gap list, or None if the recipe was never checked.
+    A returned [] means it was checked and looked complete."""
+    row = conn.execute(
+        "SELECT gaps_json FROM recipes WHERE id = ?", (recipe_id,)
+    ).fetchone()
+    if row is None or row["gaps_json"] is None:
+        return None
+    return json.loads(row["gaps_json"])
 
 
 def increment_cook_count(conn: sqlite3.Connection, recipe_id: int) -> int:
@@ -425,7 +448,10 @@ def replace_recipe_content(
         _insert_children(conn, recipe_id, old["channel"], extracted)
         conn.execute("DELETE FROM plan_steps WHERE recipe_id = ?", (recipe_id,))
         conn.execute("DELETE FROM recipe_components WHERE recipe_id = ?", (recipe_id,))
-        conn.execute("UPDATE recipes SET macros_json = NULL WHERE id = ?", (recipe_id,))
+        conn.execute(
+            "UPDATE recipes SET macros_json = NULL, gaps_json = NULL WHERE id = ?",
+            (recipe_id,),
+        )
 
 
 def delete_recipe(conn: sqlite3.Connection, recipe_id: int) -> None:

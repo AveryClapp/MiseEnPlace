@@ -66,6 +66,7 @@ mep list --tag italian --limit 20                    # filter by tag
 mep show 42                                           # full recipe
 mep show 42 --servings 8                              # scale ingredient amounts
 mep show 42 --macros                                 # estimated nutrition breakdown
+mep show 42 --check                                  # flag likely missing steps/gaps
 mep set-servings 42 4                                 # record how many it makes
 mep export 42                                         # print as Markdown (or -o file.md)
 mep delete 42                                          # remove a recipe (asks first; -f to skip)
@@ -119,6 +120,19 @@ in memory for a single cook without saving anything. These are experimental and
 use Claude; the rewrite is intentionally light (it shifts and trims the recipe,
 it doesn't reinvent it).
 
+`show --check` makes one model call to flag likely holes in a recipe: a step
+that uses an ingredient never listed, a cooking step missing an obvious time or
+temperature, an apparent skipped step. It only points at gaps; it never invents
+or fills them (anything shown on screen but not spoken can't be recovered from
+the transcript). The result is cached, and an empty result ("no obvious gaps")
+is remembered too, so a re-check is free.
+
+Most videos are one recipe, but a video that clearly teaches several independent
+dishes ("3 weeknight dinners") is split into separate recipes on `add`, each
+with its own id. Sub-preparations that belong to one finished dish (a sauce,
+dough, or marinade) stay part of that single recipe and show up under
+`show --parts`, not as their own entries.
+
 `export` prints a recipe as a portable Markdown card to stdout, or writes it to
 a file with `-o`. `delete` removes a recipe and everything stored with it
 (ingredients, steps, tags, cached plan, components, macros); it asks first unless
@@ -140,11 +154,13 @@ cost is the model calls; storage and search are local and free.
   **$0.05** with the default Anthropic model, more for very long videos. A
   `--channel` walk is just this times the number of videos.
 - **On-demand features** (`plan`, `show --parts`, `show --macros`,
-  `shopping-list`, `adapt`, and `cook` with `--have`/`--sub`) each make one
-  additional call when first used, on the same order as an extraction or less.
-- **Caching keeps it one-and-done.** Plans, components, and macros are stored
-  after the first request and reused for free; `search`, `list`, `show`, and a
-  cached `cook` never call a model at all. Features you never touch cost nothing.
+  `show --check`, `shopping-list`, `adapt`, and `cook` with `--have`/`--sub`)
+  each make one additional call when first used, on the same order as an
+  extraction or less.
+- **Caching keeps it one-and-done.** Plans, components, macros, and gap checks
+  are stored after the first request and reused for free; `search`, `list`,
+  `show`, and a cached `cook` never call a model at all. Features you never touch
+  cost nothing.
 
 Numbers are rough and depend on the provider, model (`EXTRACTION_MODEL`), and
 recipe length. OpenAI (`gpt-4o`) lands in a similar range.

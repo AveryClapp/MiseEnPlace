@@ -55,6 +55,12 @@ def complete(config: dict, *, system: str, user: str, max_tokens: int, max_retri
             raise MepError(f"{label} request failed: {exc}")
 
 
+_TRUNCATED_MSG = (
+    "The model's response was cut off at the output length limit. The recipe may "
+    "be unusually long; try again, or report it if it keeps happening."
+)
+
+
 def _anthropic(config: dict, system: str, user: str, max_tokens: int) -> str:
     from anthropic import Anthropic
 
@@ -65,6 +71,8 @@ def _anthropic(config: dict, system: str, user: str, max_tokens: int) -> str:
         system=system,
         messages=[{"role": "user", "content": user}],
     )
+    if message.stop_reason == "max_tokens":
+        raise MepError(_TRUNCATED_MSG)
     return "".join(
         block.text for block in message.content if getattr(block, "type", None) == "text"
     )
@@ -87,4 +95,7 @@ def _openai(config: dict, system: str, user: str, max_tokens: int) -> str:
             {"role": "user", "content": user},
         ],
     )
-    return response.choices[0].message.content or ""
+    choice = response.choices[0]
+    if choice.finish_reason == "length":
+        raise MepError(_TRUNCATED_MSG)
+    return choice.message.content or ""

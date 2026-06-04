@@ -9,6 +9,7 @@ from . import adapt as adapt_mod
 from . import cook as cook_mod
 from . import db, ingest, scale, shopping
 from .components import analyze_components
+from .gaps import find_gaps
 from .nutrition import estimate_macros
 from .config import (
     CONFIG_PATH,
@@ -84,11 +85,16 @@ def add(url, channel, limit):
 
     if channel:
         any_seen = False
-        for video_id, title, status, dish in ingest.add_channel(
+        for video_id, title, status, results in ingest.add_channel(
             conn, config, channel, limit
         ):
             any_seen = True
-            label = dish or title or video_id
+            if results:
+                dish = results[0][1]
+                extra = f" (+{len(results) - 1} more)" if len(results) > 1 else ""
+                label = (dish or title or video_id) + extra
+            else:
+                label = title or video_id
             click.echo(f"  [{status:12}] {label}")
         if not any_seen:
             click.echo("No videos found for that channel.")
@@ -97,13 +103,18 @@ def add(url, channel, limit):
     if not url:
         raise click.UsageError("Provide a YouTube URL or --channel <handle>.")
 
-    status, recipe_id, dish = ingest.add_video(conn, config, url)
+    status, results = ingest.add_video(conn, config, url)
     if status == "skipped":
         click.echo("Already in your collection.")
     elif status == "no_transcript":
-        click.echo(f"Stored (no transcript available) as recipe {recipe_id}.")
-    else:
+        click.echo(f"Stored (no transcript available) as recipe {results[0][0]}.")
+    elif len(results) == 1:
+        recipe_id, dish = results[0]
         click.echo(f"Added '{dish or 'untitled'}' as recipe {recipe_id}.")
+    else:
+        click.echo(f"Added {len(results)} recipes from this video:")
+        for recipe_id, dish in results:
+            click.echo(f"  {recipe_id:>4}  {dish or 'untitled'}")
 
 
 @cli.command()
@@ -206,9 +217,10 @@ def shopping_list(recipe_ids):
 @click.option("--servings", type=int, default=None, help="Scale ingredients to N servings.")
 @click.option("--parts", is_flag=True, help="Show the recipe's component breakdown.")
 @click.option("--macros", is_flag=True, help="Show an estimated nutrition breakdown.")
-def show(recipe_id, servings, parts, macros):
-    """Display one recipe in full, its components with --parts, or estimated
-    nutrition with --macros."""
+@click.option("--check", is_flag=True, help="Check for likely missing steps or gaps.")
+def show(recipe_id, servings, parts, macros, check):
+    """Display one recipe in full, its components with --parts, estimated
+    nutrition with --macros, or likely gaps with --check."""
     config = load_config()
     db.init_db()
     conn = db.connect()
@@ -220,6 +232,9 @@ def show(recipe_id, servings, parts, macros):
         return
     if macros:
         _render_macros(data["recipe"], _ensure_macros(conn, config, data))
+        return
+    if check:
+        _render_gaps(data["recipe"], _ensure_gaps(conn, config, data))
         return
     _render(data, servings)
 
@@ -471,6 +486,36 @@ def _render_macros(recipe: dict, est: dict) -> None:
     if est["note"]:
         click.secho(f"  {est['note']}", fg="yellow")
     click.secho("  Estimated from ingredients — approximate, not exact.", fg="yellow")
+    click.echo()
+
+
+def _ensure_gaps(conn, config, data):
+    """Return the cached gap list, computing it lazily on first request. None in
+    the cache means never checked; [] means checked and nothing found."""
+    cached = db.get_gaps(conn, data["recipe"]["id"])
+    if cached is not None:
+        return cached
+    click.echo("Checking for gaps...")
+    gaps = find_gaps(data, config=config)
+    db.save_gaps(conn, data["recipe"]["id"], gaps)
+    return gaps
+
+
+def _render_gaps(recipe: dict, gaps: list[str]) -> None:
+    name = recipe["dish_name"] or recipe["title"] or "recipe"
+    click.echo()
+    if not gaps:
+        click.secho(f"{name} — no obvious gaps found.", bold=True)
+        click.echo()
+        return
+    click.secho(f"{name} — possible gaps", bold=True)
+    for g in gaps:
+        click.echo(f"  - {g}")
+    click.secho(
+        "  Flagged from the transcript only — the detail may be shown on screen"
+        " instead.",
+        fg="yellow",
+    )
     click.echo()
 
 

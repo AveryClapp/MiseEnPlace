@@ -33,6 +33,7 @@ mep/
   components.py  Recipe -> Claude -> component breakdown (for adapt)
   adapt.py       Recipe -> Claude -> rewrite around what you have (experimental)
   nutrition.py   Recipe -> Claude -> macro estimate (lazy, cached)
+  gaps.py        Recipe -> Claude -> likely missing-step/gap flags (lazy, cached)
   shopping.py    Recipes -> Claude -> one combined grocery list (display-only)
 tests/           Offline unit tests (no network, no keys)
 docs/plans/      Design docs
@@ -45,6 +46,12 @@ docs/plans/      Design docs
   exit 1. Let real bugs raise a normal traceback — don't wrap them.
 - **`video_id` is the idempotency key** (`UNIQUE` in `recipes`). Adds check
   existence first; re-adding is a no-op skip.
+- **A video may yield multiple recipes.** Extraction returns a list (conservative
+  split: only genuinely independent dishes, never sub-preparations). The first
+  recipe keeps the real `video_id`; extras get a `#N` suffix. The base `video_id`
+  stays the idempotency anchor, so the existence check still covers the whole
+  video. `ingest_one`/`add_video`/`add_channel` return a list of `(recipe_id,
+  dish_name)` results.
 - **Never normalize quantities or units.** Store "a handful" / "to taste"
   exactly as Claude returns them. Quantity/cook_time/servings/difficulty are
   TEXT and nullable.
@@ -71,10 +78,14 @@ docs/plans/      Design docs
 
 ## Extraction
 
-The system prompt in `extract.py` owns the JSON contract; `_parse_json` is
-deliberately forgiving (strips fences, slices to outermost braces). If you
-change the recipe shape, update the prompt, `_parse_json` expectations, and
-`db.insert_recipe` together.
+The system prompt in `extract.py` owns the JSON contract: a `{"recipes": [...]}`
+object. `_parse_json` is deliberately forgiving (strips fences, slices to
+outermost braces); `_parse_recipes` then pulls the list and keeps only entries
+with a `dish_name` (a null `dish_name` is the model's "not a recipe" signal, so
+that filters to an empty list -> one empty stub). If you change the recipe shape,
+update the prompt, `_parse_recipes` expectations, and `db.insert_recipe`
+together. Truncated model responses (hit `max_tokens`) raise a clear `MepError`
+from `llm.py` rather than failing JSON parsing.
 
 ## LLM provider
 
