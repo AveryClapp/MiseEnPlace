@@ -133,8 +133,8 @@ it doesn't reinvent it).
 
 `discover` picks a random recipe from your collection, optionally filtered. Use
 `--type` (breakfast, lunch, dinner, snack, dessert), `--healthy` (health score
->= 7) or `--indulgent` (<= 4) — or `--min-health`/`--max-health` for an exact
-range — and `-i/--ingredient` (repeatable) to require ingredients you want to
+>= 7) or `--indulgent` (<= 4), or `--min-health`/`--max-health` for an exact
+range, plus `-i/--ingredient` (repeatable) to require ingredients you want to
 use. `-n/--count` returns more than one; with no filters it is completely
 random. A single pick prints the full recipe; several print as a list.
 
@@ -148,9 +148,9 @@ when a type/health filter could be hiding unclassified recipes.
 `show --check` makes one model call to flag likely holes in a recipe: a step
 that uses an ingredient never listed, a cooking step missing an obvious time or
 temperature, an apparent skipped step. It only points at gaps; it never invents
-or fills them (anything shown on screen but not spoken can't be recovered from
-the transcript). The result is cached, and an empty result ("no obvious gaps")
-is remembered too, so a re-check is free.
+or fills them (anything not in the source text, like a detail shown on screen in
+a video, can't be recovered). The result is cached, and an empty result ("no
+obvious gaps") is remembered too, so a re-check is free.
 
 Most videos are one recipe, but a video that clearly teaches several independent
 dishes ("3 weeknight dinners") is split into separate recipes on `add`, each
@@ -160,8 +160,9 @@ dough, or marinade) stay part of that single recipe and show up under
 
 `export` prints a recipe as a portable Markdown card to stdout, or writes it to
 a file with `-o`. `delete` removes a recipe and everything stored with it
-(ingredients, steps, tags, cached plan, components, macros); it asks first unless
-you pass `-f`. `shopping-list` takes one or more recipe ids and makes a single
+(ingredients, steps, tags, and any cached plan, components, macros, gaps, and
+classification); it asks first unless you pass `-f`. `shopping-list` takes one or
+more recipe ids and makes a single
 model call to merge their ingredients into one grocery list, summing compatible
 amounts and grouping by aisle. The combined amounts are estimates shown only on
 screen; nothing in the database is normalized or changed.
@@ -174,12 +175,12 @@ transcripts are stored as empty entries (not errors) so they aren't re-fetched.
 
 `mep add` takes more than YouTube. Pass it any of:
 
-- **A YouTube URL** — transcript → recipe (as above).
-- **A recipe web page URL** — most recipe sites embed their recipe as schema.org
+- **A YouTube URL**: transcript to a recipe (as above).
+- **A recipe web page URL**: most recipe sites embed their recipe as schema.org
   data, which `mep` reads directly: accurate, and usually with no extraction call
   at all. Pages without it fall back to extracting from the page text.
 - **A local text file** (`mep add recipe.txt`) **or pasted text**
-  (`mep add --text "..."`) — for recipes from anywhere else.
+  (`mep add --text "..."`), for recipes from anywhere else.
 
 Each is de-duplicated by a stable id (the video id, the normalized URL, or a hash
 of the text), so re-adding the same source is a no-op. `mep show` notes where a
@@ -191,7 +192,7 @@ not a stored stub (only channel syncs keep stubs, to avoid re-fetching duds).
 Everything runs on your own API key, so you pay the provider directly. The only
 cost is the model calls; storage and search are local and free.
 
-- **Adding a video** is the main cost: one extraction call (empirically around
+- **Adding a recipe** is the main cost: one extraction call (empirically around
   **$0.05** with the default Anthropic model, more for very long videos) plus a
   small classification call per recipe for meal type and health score. A
   `--channel` walk is just this times the number of videos. Web pages that embed
@@ -235,7 +236,7 @@ mep add --channel @aragusea --limit 5                 # latest 5 from Adam Ragus
 `source → text (YouTube transcript, web page, or pasted) → an LLM (Claude or
 OpenAI), or a web page's embedded schema.org recipe → JSON → SQLite`. Search uses
 SQLite FTS5 over dish name, ingredients, and channel. Vague quantities like "a
-handful" are stored verbatim — nothing is normalized.
+handful" are stored verbatim; nothing is normalized.
 
 ## Develop
 

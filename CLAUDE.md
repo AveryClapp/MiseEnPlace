@@ -18,14 +18,15 @@ over on first run.
 
 ```
 mep/
-  cli.py         Click commands (init, add, search, show, list, plan, cook, adapt)
+  cli.py         Click commands (init, add, search, list, show, discover, classify,
+                 set-servings, export, delete, shopping-list, plan, cook, adapt)
   config.py      ~/.mep paths, config load/validate, model id, legacy migration
   errors.py      MepError — user-fixable problems, caught in cli.main()
-  llm.py         create_message: shared Claude call with retry/backoff
+  llm.py         complete: shared model call (Anthropic/OpenAI), retry + truncation guard
   db.py          Schema, inserts, FTS5 search, plan/component storage, read queries
   transcript.py  URL -> video_id, transcript fetch (None if unavailable)
   web.py         Recipe web page -> schema.org JSON-LD (or readable text fallback)
-  extract.py     Transcript -> Claude -> parsed recipe dict
+  extract.py     Text -> Claude -> parsed recipe list (one or more)
   youtube.py     oEmbed metadata (keyless) + Data API channel walk
   ingest.py      Orchestration: _store_recipes + add_video/add_channel/add_url/
                  add_text/add_source (dispatch a file, YouTube URL, or web URL)
@@ -61,8 +62,8 @@ docs/plans/      Design docs
   split: only genuinely independent dishes, never sub-preparations). The first
   recipe keeps the real `video_id`; extras get a `#N` suffix. The base `video_id`
   stays the idempotency anchor, so the existence check still covers the whole
-  video. `ingest_one`/`add_video`/`add_channel` return a list of `(recipe_id,
-  dish_name)` results.
+  video. The `add_*` functions return a list of `(recipe_id, dish_name,
+  meal_type, health_score)` results.
 - **Never normalize quantities or units.** Store "a handful" / "to taste"
   exactly as Claude returns them. Quantity/cook_time/servings/difficulty are
   TEXT and nullable.
@@ -106,9 +107,9 @@ from `llm.py` rather than failing JSON parsing.
 
 ## LLM provider
 
-All model calls (extract, plan, components, adapt) go through `llm.complete(config,
-system=..., user=..., max_tokens=...)`, which returns text and retries transient
-errors. `config` selects the backend: `LLM_PROVIDER` is `anthropic` (default) or
+All model calls (extract, classify, plan, components, nutrition, gaps, shopping,
+adapt) go through `llm.complete(config, system=..., user=..., max_tokens=...)`,
+which returns text, retries transient errors, and raises on a truncated response. `config` selects the backend: `LLM_PROVIDER` is `anthropic` (default) or
 `openai`; `require_api_key`/`model` resolve the right key and default model
 (`claude-sonnet-4-20250514` / `gpt-4o`, overridable via `EXTRACTION_MODEL`). The
 `openai` SDK is an optional extra, imported lazily. Pass `config` to these
