@@ -120,6 +120,8 @@ Channel ingestion is idempotent: videos already stored are skipped, so you can
 re-run it to pick up only what's new. Non-recipe videos and videos without
 transcripts are stored as empty entries (not errors) so they aren't re-fetched.
 
+**Cost** per video empirically is around $0.05, maybe more depending on length.
+
 ## Channels to try
 
 Recipe-forward channels that work well (most videos are real walkthroughs with
