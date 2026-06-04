@@ -17,6 +17,7 @@ _PLAN_COLUMNS = {
 }
 _RECIPE_COLUMNS = {
     "times_cooked": "INTEGER NOT NULL DEFAULT 0",
+    "macros_json": "TEXT",
 }
 
 SCHEMA = """
@@ -32,7 +33,8 @@ CREATE TABLE IF NOT EXISTS recipes (
     difficulty     TEXT,
     raw_transcript TEXT,
     created_at     TEXT DEFAULT (datetime('now')),
-    times_cooked   INTEGER NOT NULL DEFAULT 0
+    times_cooked   INTEGER NOT NULL DEFAULT 0,
+    macros_json    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS ingredients (
@@ -129,6 +131,25 @@ def set_servings(conn: sqlite3.Connection, recipe_id: int, servings: str) -> Non
         conn.execute(
             "UPDATE recipes SET servings = ? WHERE id = ?", (servings, recipe_id)
         )
+
+
+def save_macros(conn: sqlite3.Connection, recipe_id: int, macros: dict) -> None:
+    """Cache a recipe's estimated nutrition (computed lazily on first request)."""
+    with conn:
+        conn.execute(
+            "UPDATE recipes SET macros_json = ? WHERE id = ?",
+            (json.dumps(macros), recipe_id),
+        )
+
+
+def get_macros(conn: sqlite3.Connection, recipe_id: int) -> dict | None:
+    """Return the cached macro estimate, or None if not computed yet."""
+    row = conn.execute(
+        "SELECT macros_json FROM recipes WHERE id = ?", (recipe_id,)
+    ).fetchone()
+    if row is None or row["macros_json"] is None:
+        return None
+    return json.loads(row["macros_json"])
 
 
 def increment_cook_count(conn: sqlite3.Connection, recipe_id: int) -> int:
@@ -404,6 +425,7 @@ def replace_recipe_content(
         _insert_children(conn, recipe_id, old["channel"], extracted)
         conn.execute("DELETE FROM plan_steps WHERE recipe_id = ?", (recipe_id,))
         conn.execute("DELETE FROM recipe_components WHERE recipe_id = ?", (recipe_id,))
+        conn.execute("UPDATE recipes SET macros_json = NULL WHERE id = ?", (recipe_id,))
 
 
 def list_recipes(

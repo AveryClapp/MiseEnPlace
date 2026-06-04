@@ -8,6 +8,7 @@ from . import adapt as adapt_mod
 from . import cook as cook_mod
 from . import db, ingest, scale
 from .components import analyze_components
+from .nutrition import estimate_macros
 from .config import (
     CONFIG_PATH,
     DB_PATH,
@@ -149,8 +150,10 @@ def set_servings(recipe_id, servings):
 @click.argument("recipe_id", type=int)
 @click.option("--servings", type=int, default=None, help="Scale ingredients to N servings.")
 @click.option("--parts", is_flag=True, help="Show the recipe's component breakdown.")
-def show(recipe_id, servings, parts):
-    """Display one recipe in full, or its components with --parts."""
+@click.option("--macros", is_flag=True, help="Show an estimated nutrition breakdown.")
+def show(recipe_id, servings, parts, macros):
+    """Display one recipe in full, its components with --parts, or estimated
+    nutrition with --macros."""
     config = load_config()
     db.init_db()
     conn = db.connect()
@@ -159,6 +162,9 @@ def show(recipe_id, servings, parts):
         raise MepError(f"No recipe with id {recipe_id}.")
     if parts:
         _render_parts(data["recipe"], _ensure_components(conn, config, data))
+        return
+    if macros:
+        _render_macros(data["recipe"], _ensure_macros(conn, config, data))
         return
     _render(data, servings)
 
@@ -373,6 +379,44 @@ def _render_parts(recipe: dict, comps: list[dict]) -> None:
             steps = ", ".join(str(s) for s in c["make_steps"])
             click.echo(f"       made in steps {steps}")
         click.echo()
+
+
+def _ensure_macros(conn, config, data):
+    """Return the cached macro estimate, computing it lazily on first request."""
+    cached = db.get_macros(conn, data["recipe"]["id"])
+    if cached:
+        return cached
+    click.echo("Estimating macros...")
+    result = estimate_macros(data, config=config)
+    db.save_macros(conn, data["recipe"]["id"], result)
+    return result
+
+
+def _macro_line(m: dict) -> str:
+    parts = []
+    if m["calories"] is not None:
+        parts.append(f"{round(m['calories'])} kcal")
+    for key, label in (("protein_g", "protein"), ("carbs_g", "carbs"), ("fat_g", "fat")):
+        if m[key] is not None:
+            parts.append(f"{round(m[key])}g {label}")
+    return " · ".join(parts)
+
+
+def _render_macros(recipe: dict, est: dict) -> None:
+    name = recipe["dish_name"] or recipe["title"] or "recipe"
+    macros = est["macros"]
+    click.echo()
+    click.secho(f"{name} — estimated macros", bold=True)
+    click.echo("  whole recipe:  " + _macro_line(macros))
+    # Prefer the recorded serving count; fall back to the model's estimate.
+    base = scale.parse_base_servings(recipe["servings"]) or est["servings"]
+    if base and base >= 1:
+        per = {k: (v / base if v is not None else None) for k, v in macros.items()}
+        click.echo(f"  per serving (~{round(base)}):  " + _macro_line(per))
+    if est["note"]:
+        click.secho(f"  {est['note']}", fg="yellow")
+    click.secho("  Estimated from ingredients — approximate, not exact.", fg="yellow")
+    click.echo()
 
 
 def _preview_ingredients(ings: list[str]) -> str:

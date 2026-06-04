@@ -65,6 +65,7 @@ mep list                                             # browse, newest first
 mep list --tag italian --limit 20                    # filter by tag
 mep show 42                                           # full recipe
 mep show 42 --servings 8                              # scale ingredient amounts
+mep show 42 --macros                                 # estimated nutrition breakdown
 mep set-servings 42 4                                 # record how many it makes
 
 mep plan 42                                          # AI cooking timeline (experimental)
@@ -99,6 +100,11 @@ as written), so `--servings 3` simply makes 3× the recipe. Use `mep set-serving
 to people instead.
 
 Both `plan` and `cook` are experimental: the timings are AI estimates.
+
+`show --macros` shows an estimated nutrition breakdown (calories, protein, carbs,
+fat) for the whole recipe and per serving. It's computed lazily on first request
+(one model call, then cached, so it's free afterward and costs nothing if you
+never ask) and is a rough estimate from the ingredients, not exact.
 
 `show --parts` breaks a recipe into its components (marinade, pita, sauce…) so
 you can see what each ingredient is for. `adapt` rewrites the recipe around what

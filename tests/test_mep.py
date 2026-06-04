@@ -14,6 +14,7 @@ os.environ["MEP_HOME"] = tempfile.mkdtemp()
 
 from mep import adapt, cli, config, cook, db, scale  # noqa: E402
 from mep.components import _normalize_components  # noqa: E402
+from mep.nutrition import _normalize as _normalize_macros  # noqa: E402
 from mep.errors import MepError  # noqa: E402
 from mep.extract import _parse_json  # noqa: E402
 from mep.plan import _normalize_tasks  # noqa: E402
@@ -153,6 +154,31 @@ def test_set_servings_roundtrip():
     assert db.get_recipe(conn, rid)["recipe"]["servings"] is None
     db.set_servings(conn, rid, "4-6")
     assert db.get_recipe(conn, rid)["recipe"]["servings"] == "4-6"
+
+
+def test_normalize_macros_coerces():
+    out = _normalize_macros(
+        {"calories": "520", "protein_g": 32, "carbs_g": 41.5, "fat_g": -2, "servings": 4, "note": " est "}
+    )
+    assert out["macros"]["calories"] == 520.0
+    assert out["macros"]["fat_g"] == 0.0  # clamped
+    assert out["servings"] == 4.0
+    assert out["note"] == "est"
+
+
+def test_normalize_macros_all_missing_raises():
+    with pytest.raises(MepError):
+        _normalize_macros({"calories": None, "protein_g": "x"})
+
+
+def test_macros_cache_roundtrip_and_lazy():
+    db.init_db()
+    conn = db.connect()
+    rid = _seed_recipe(conn, "macrovid001")
+    assert db.get_macros(conn, rid) is None  # lazy: nothing until requested
+    est = {"macros": {"calories": 500.0}, "servings": 2.0, "note": None}
+    db.save_macros(conn, rid, est)
+    assert db.get_macros(conn, rid) == est
 
 
 def test_increment_cook_count():
