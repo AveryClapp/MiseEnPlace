@@ -492,6 +492,43 @@ def test_save_get_components_roundtrip():
     assert db.get_components(conn, rid) == []
 
 
+# --- graceful fault handling --------------------------------------------------
+
+
+def test_load_config_corrupt_file_raises_clean_error(tmp_path, monkeypatch):
+    bad = tmp_path / "config.json"
+    bad.write_text("{ not valid json,,, ")
+    monkeypatch.setattr(config, "CONFIG_PATH", bad)
+    with pytest.raises(MepError):  # not a raw JSONDecodeError
+        config.load_config()
+
+
+def test_load_config_missing_file_is_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "nope.json")
+    assert config.load_config() == {}
+
+
+def test_youtube_api_error_is_wrapped(monkeypatch):
+    from googleapiclient.errors import HttpError
+    from mep import youtube
+
+    resp = type("Resp", (), {"status": 403, "reason": "quotaExceeded"})()
+    err = HttpError(resp, b'{"error": {"message": "quota"}}')
+
+    class _Raises:
+        def channels(self):
+            return self
+        def list(self, **kw):
+            return self
+        def execute(self):
+            raise err
+
+    monkeypatch.setattr(youtube, "_client", lambda api_key: _Raises())
+    with pytest.raises(MepError) as got:
+        youtube.resolve_channel("badkey", "@someone")
+    assert "YouTube Data API" in str(got.value)
+
+
 # --- schema self-heal on connect ----------------------------------------------
 
 

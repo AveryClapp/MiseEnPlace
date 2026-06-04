@@ -11,8 +11,18 @@ import urllib.error
 import urllib.request
 
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 from .errors import MepError
+
+
+def _api_error(exc: HttpError) -> str:
+    reason = getattr(exc, "reason", None) or str(exc)
+    return (
+        f"YouTube Data API error: {reason}. Check that YOUTUBE_API_KEY is valid, "
+        "that the YouTube Data API v3 is enabled for it, and that you are within "
+        "your daily quota."
+    )
 
 
 def fetch_oembed(video_id: str) -> dict:
@@ -37,11 +47,14 @@ def resolve_channel(api_key: str, handle: str) -> tuple[str, str]:
     """Resolve an @handle to (uploads_playlist_id, channel_title)."""
     handle = handle.lstrip("@")
     yt = _client(api_key)
-    resp = (
-        yt.channels()
-        .list(part="contentDetails,snippet", forHandle=handle)
-        .execute()
-    )
+    try:
+        resp = (
+            yt.channels()
+            .list(part="contentDetails,snippet", forHandle=handle)
+            .execute()
+        )
+    except HttpError as exc:
+        raise MepError(_api_error(exc))
     items = resp.get("items")
     if not items:
         raise MepError(f"Channel not found: @{handle}")
@@ -57,16 +70,19 @@ def iter_playlist_videos(api_key: str, playlist_id: str, limit: int | None = Non
     token = None
     count = 0
     while True:
-        resp = (
-            yt.playlistItems()
-            .list(
-                part="contentDetails,snippet",
-                playlistId=playlist_id,
-                maxResults=50,
-                pageToken=token,
+        try:
+            resp = (
+                yt.playlistItems()
+                .list(
+                    part="contentDetails,snippet",
+                    playlistId=playlist_id,
+                    maxResults=50,
+                    pageToken=token,
+                )
+                .execute()
             )
-            .execute()
-        )
+        except HttpError as exc:
+            raise MepError(_api_error(exc))
         for item in resp.get("items", []):
             yield (
                 item["contentDetails"]["videoId"],

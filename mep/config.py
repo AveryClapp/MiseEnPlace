@@ -56,7 +56,13 @@ def load_config() -> dict:
     """Load config.json, layering environment variables on top."""
     data = {}
     if CONFIG_PATH.exists():
-        data = json.loads(CONFIG_PATH.read_text())
+        try:
+            data = json.loads(CONFIG_PATH.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            raise MepError(
+                f"Could not read config at {CONFIG_PATH}: {exc}. "
+                "Fix the file, or run `mep init` to recreate it."
+            )
     for key in CONFIG_KEYS:
         env = os.environ.get(key)
         if env:

@@ -35,7 +35,10 @@ def init():
     MEP_DIR.mkdir(parents=True, exist_ok=True)
     existing = {}
     if CONFIG_PATH.exists():
-        existing = json.loads(CONFIG_PATH.read_text())
+        try:
+            existing = json.loads(CONFIG_PATH.read_text())
+        except (json.JSONDecodeError, OSError):
+            click.secho("(existing config was unreadable; starting fresh)", fg="yellow")
 
     youtube_key = click.prompt(
         "YouTube Data API v3 key (blank to skip; needed for channel ingest)",
