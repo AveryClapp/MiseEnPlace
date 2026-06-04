@@ -1,9 +1,10 @@
 """Orchestration: pull content from a source, extract recipes, classify, store.
 
 Sources share one tail (`_store_recipes`): extract -> per-recipe classify ->
-insert. They differ only in how they get the text and a stable id. `add_source`
-dispatches a positional argument (a file, a YouTube URL, or a web URL); `add_text`
-and `add_video`/`add_channel` are the typed entry points.
+insert. They differ only in how they get the content and a stable id.
+`add_source` dispatches a positional argument (an image file, a text file, a
+YouTube URL, or a web URL); `add_images`/`add_text`/`add_video`/`add_channel`
+are the typed entry points.
 """
 
 import hashlib
