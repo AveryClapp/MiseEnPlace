@@ -1,8 +1,10 @@
 # Mise En Place (mep)
 
-A personal CLI that turns YouTube cooking videos into a searchable recipe
-database. It pulls a video's transcript, extracts a structured recipe with
-Claude, and stores it in local SQLite. Everything stays on your machine.
+A personal CLI that turns cooking content into a searchable recipe database.
+Point it at a YouTube video, a recipe web page, a text file, or pasted text; it
+extracts a structured recipe (with Claude, or directly from a page's embedded
+recipe data when available) and stores it in local SQLite. Everything stays on
+your machine.
 
 ## Install
 
@@ -56,7 +58,10 @@ key. It is only required to walk a channel's uploads.
 ## Usage
 
 ```bash
-mep add https://www.youtube.com/watch?v=VIDEO_ID    # one video
+mep add https://www.youtube.com/watch?v=VIDEO_ID    # a YouTube video
+mep add https://www.seriouseats.com/some-recipe      # a recipe web page
+mep add recipe.txt                                   # a local text file
+mep add --text "2 cups flour, 1 egg, ..."           # pasted recipe text
 mep add --channel @JKenjiLopezAlt --limit 10        # latest 10 from a channel
 mep add --channel @JKenjiLopezAlt                    # whole channel
 
@@ -165,6 +170,22 @@ Channel ingestion is idempotent: videos already stored are skipped, so you can
 re-run it to pick up only what's new. Non-recipe videos and videos without
 transcripts are stored as empty entries (not errors) so they aren't re-fetched.
 
+## Sources
+
+`mep add` takes more than YouTube. Pass it any of:
+
+- **A YouTube URL** — transcript → recipe (as above).
+- **A recipe web page URL** — most recipe sites embed their recipe as schema.org
+  data, which `mep` reads directly: accurate, and usually with no extraction call
+  at all. Pages without it fall back to extracting from the page text.
+- **A local text file** (`mep add recipe.txt`) **or pasted text**
+  (`mep add --text "..."`) — for recipes from anywhere else.
+
+Each is de-duplicated by a stable id (the video id, the normalized URL, or a hash
+of the text), so re-adding the same source is a no-op. `mep show` notes where a
+recipe came from. Adding a web page or text that isn't a recipe is a clean error,
+not a stored stub (only channel syncs keep stubs, to avoid re-fetching duds).
+
 ## Cost
 
 Everything runs on your own API key, so you pay the provider directly. The only
@@ -173,7 +194,9 @@ cost is the model calls; storage and search are local and free.
 - **Adding a video** is the main cost: one extraction call (empirically around
   **$0.05** with the default Anthropic model, more for very long videos) plus a
   small classification call per recipe for meal type and health score. A
-  `--channel` walk is just this times the number of videos.
+  `--channel` walk is just this times the number of videos. Web pages that embed
+  schema.org recipe data skip the extraction call entirely (only the small
+  classification call remains); text and JSON-LD-less pages cost like a video.
 - **On-demand features** (`plan`, `show --parts`, `show --macros`,
   `show --check`, `shopping-list`, `adapt`, and `cook` with `--have`/`--sub`)
   each make one additional call when first used, on the same order as an
@@ -209,9 +232,10 @@ mep add --channel @aragusea --limit 5                 # latest 5 from Adam Ragus
 
 ## How it works
 
-`url → transcript (youtube-transcript-api) → an LLM (Claude or OpenAI) → JSON →
-SQLite`. Search uses SQLite FTS5 over dish name, ingredients, and channel. Vague
-quantities like "a handful" are stored verbatim — nothing is normalized.
+`source → text (YouTube transcript, web page, or pasted) → an LLM (Claude or
+OpenAI), or a web page's embedded schema.org recipe → JSON → SQLite`. Search uses
+SQLite FTS5 over dish name, ingredients, and channel. Vague quantities like "a
+handful" are stored verbatim — nothing is normalized.
 
 ## Develop
 

@@ -5,8 +5,8 @@ Guidance for working in this repo. Design docs live locally under `docs/plans/`
 
 ## What this is
 
-A single-user CLI that extracts structured recipes from YouTube cooking videos
-and stores them in local SQLite at `~/.mep/mep.db`. Python + `click` + stdlib
+A single-user CLI that extracts structured recipes from YouTube videos, recipe
+web pages, and pasted text, and stores them in local SQLite at `~/.mep/mep.db`. Python + `click` + stdlib
 `sqlite3` (no ORM). No server, no web UI, no accounts.
 
 The command is `mep` (the name `mise` is taken by the unrelated jdx/mise
@@ -24,9 +24,11 @@ mep/
   llm.py         create_message: shared Claude call with retry/backoff
   db.py          Schema, inserts, FTS5 search, plan/component storage, read queries
   transcript.py  URL -> video_id, transcript fetch (None if unavailable)
+  web.py         Recipe web page -> schema.org JSON-LD (or readable text fallback)
   extract.py     Transcript -> Claude -> parsed recipe dict
   youtube.py     oEmbed metadata (keyless) + Data API channel walk
-  ingest.py      Orchestration: ingest_one / add_video / add_channel
+  ingest.py      Orchestration: _store_recipes + add_video/add_channel/add_url/
+                 add_text/add_source (dispatch a file, YouTube URL, or web URL)
   plan.py        Recipe -> Claude -> cooking timeline (experimental)
   cook.py        Live step-by-step walkthrough + pure timer helpers
   scale.py       Best-effort serving-size quantity scaling (pure)
@@ -45,8 +47,16 @@ docs/plans/      Design docs
 - **Errors:** raise `MepError` for anything the user can fix (missing key, bad
   URL, unknown channel). It is caught in `cli.main()` and printed cleanly with
   exit 1. Let real bugs raise a normal traceback — don't wrap them.
-- **`video_id` is the idempotency key** (`UNIQUE` in `recipes`). Adds check
-  existence first; re-adding is a no-op skip.
+- **`video_id` is the idempotency key** (`UNIQUE` in `recipes`), now holding a
+  source-appropriate stable id: a YouTube id, a `web.canonical_url` (normalized
+  URL), or `text:<sha256[:16]>`. Adds check existence first; re-adding is a no-op
+  skip. `source_type` ('youtube' / 'web' / 'text') records the origin; legacy
+  rows backfill to 'youtube' in `_migrate`.
+- **Sources share one tail.** `ingest._store_recipes` does extract -> classify ->
+  insert for every source; the `add_*` functions only differ in how they fetch
+  text and an id. `add_url` prefers schema.org JSON-LD (`web.py`, no extraction
+  call) and falls back to the LLM over page text. Web/text adds raise on a
+  non-recipe (no stub); only YouTube channel syncs keep stubs to avoid re-fetch.
 - **A video may yield multiple recipes.** Extraction returns a list (conservative
   split: only genuinely independent dishes, never sub-preparations). The first
   recipe keeps the real `video_id`; extras get a `#N` suffix. The base `video_id`

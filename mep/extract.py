@@ -10,12 +10,13 @@ import json
 from .errors import MepError
 from .llm import complete
 
-SYSTEM_PROMPT = """You extract the structured recipe(s) from a YouTube cooking \
-video transcript.
+SYSTEM_PROMPT = """You extract the structured recipe(s) from a piece of cooking \
+text: a video transcript, a recipe web page, or a pasted note.
 
-Transcripts are usually auto-generated: no punctuation, no capitalization, \
-run-on text, plus filler talk and sponsor reads. Recover the recipe(s) as best \
-you can.
+The text is often messy: an auto-generated transcript (no punctuation, run-on, \
+with filler talk and sponsor reads), or a web page with navigation and a long \
+life-story preamble wrapped around the actual recipe. Recover the recipe(s) as \
+best you can.
 
 Return ONLY a single JSON object, no markdown fences and no commentary, with \
 exactly this shape:
@@ -58,7 +59,7 @@ ingredient) when inferable; otherwise an empty array."""
 def extract_recipes(transcript: str, *, title: str | None, config: dict) -> list[dict]:
     """Extract one or more recipes from a transcript. Returns a list of parsed
     recipe dicts (usually one); an empty list when the video is not a recipe."""
-    user_content = f"Video title: {title or '(unknown)'}\n\nTranscript:\n{transcript}"
+    user_content = f"Source title: {title or '(unknown)'}\n\n{transcript}"
     text = complete(config, system=SYSTEM_PROMPT, user=user_content, max_tokens=4096)
     return _parse_recipes(_parse_json(text))
 

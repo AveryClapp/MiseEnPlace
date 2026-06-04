@@ -12,7 +12,7 @@ import pytest
 
 os.environ["MEP_HOME"] = tempfile.mkdtemp()
 
-from mep import adapt, cli, config, cook, db, ingest, scale, shopping  # noqa: E402
+from mep import adapt, cli, config, cook, db, ingest, scale, shopping, web  # noqa: E402
 from mep.classify import _normalize as _normalize_classification  # noqa: E402
 from mep.components import _normalize_components  # noqa: E402
 from mep.gaps import _normalize as _normalize_gaps  # noqa: E402
@@ -489,6 +489,133 @@ def test_save_get_components_roundtrip():
     with conn:
         conn.execute("DELETE FROM recipes WHERE id = ?", (rid,))
     assert db.get_components(conn, rid) == []
+
+
+# --- web ingestion (JSON-LD parsing) ------------------------------------------
+
+
+_JSONLD_PAGE = """<html><head><title>Best Cacio e Pepe Recipe</title>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"Recipe","name":"Cacio e Pepe",
+ "recipeIngredient":["200g spaghetti","100g pecorino","black pepper to taste"],
+ "recipeInstructions":[{"@type":"HowToStep","text":"Boil pasta"},
+                       {"@type":"HowToStep","text":"Toss with cheese"}],
+ "totalTime":"PT20M","recipeYield":"2 servings","recipeCuisine":"Italian"}
+</script></head><body><p>A long life story about my trip to Rome...</p>
+<script>var ads = 1;</script></body></html>"""
+
+
+def test_web_parses_jsonld_recipe():
+    page = web.parse_page(_JSONLD_PAGE, "https://www.example.com/cacio/?utm_source=fb")
+    assert page["title"] == "Best Cacio e Pepe Recipe"
+    assert page["site"] == "example.com"
+    assert len(page["recipes"]) == 1
+    r = page["recipes"][0]
+    assert r["dish_name"] == "Cacio e Pepe"
+    # Ingredient lines are kept verbatim (no quantity parsing).
+    assert r["ingredients"][0] == {"name": "200g spaghetti", "quantity": None, "unit": None, "prep": None}
+    assert r["steps"] == ["Boil pasta", "Toss with cheese"]
+    assert r["cook_time"] == "20 min"
+    assert r["servings"] == "2 servings"
+    assert "italian" in r["tags"]
+
+
+def test_web_handles_graph_and_string_instructions():
+    html = (
+        '<script type="application/ld+json">{"@graph":['
+        '{"@type":"WebPage"},'
+        '{"@type":["Recipe"],"name":"Toast","recipeIngredient":["bread"],'
+        '"recipeInstructions":"Step one\\nStep two"}]}</script>'
+    )
+    page = web.parse_page(html, "https://x.com/")
+    assert len(page["recipes"]) == 1
+    r = page["recipes"][0]
+    assert r["dish_name"] == "Toast"
+    assert r["steps"] == ["Step one", "Step two"]
+
+
+def test_web_no_recipe_returns_empty_with_readable_text():
+    html = "<html><body><p>Just a blog post about cats.</p><script>var x=1;</script></body></html>"
+    page = web.parse_page(html, "https://x.com/")
+    assert page["recipes"] == []
+    assert "cats" in page["text"]
+    assert "var x" not in page["text"]  # script content excluded from fallback text
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("https://Example.com/Recipe/?utm_source=fb&id=3#frag", "https://example.com/Recipe?id=3"),
+        ("https://www.site.com/a/", "https://www.site.com/a"),
+        ("http://site.com", "http://site.com/"),
+    ],
+)
+def test_canonical_url(url, expected):
+    assert web.canonical_url(url) == expected
+
+
+def test_canonical_url_rejects_non_web():
+    with pytest.raises(MepError):
+        web.canonical_url("ftp://nope.com/x")
+
+
+# --- text + source dispatch ---------------------------------------------------
+
+
+def test_add_text_stores_and_is_idempotent(monkeypatch):
+    db.init_db()
+    conn = db.connect()
+    monkeypatch.setattr(
+        ingest, "extract_recipes",
+        lambda t, *, title, config: [
+            {"dish_name": "Soup", "ingredients": [{"name": "water"}], "steps": ["boil"], "tags": []}
+        ],
+    )
+    monkeypatch.setattr(
+        ingest, "classify_recipe", lambda d, *, config: {"meal_type": "dinner", "health_score": 5}
+    )
+    status, results = ingest.add_text(conn, {}, "some recipe text")
+    assert status == "added" and len(results) == 1
+    assert db.get_recipe(conn, results[0][0])["recipe"]["source_type"] == "text"
+    # Same text hashes to the same id -> idempotent skip.
+    status2, _ = ingest.add_text(conn, {}, "some recipe text")
+    assert status2 == "skipped"
+
+
+def test_add_text_no_recipe_raises(monkeypatch):
+    db.init_db()
+    conn = db.connect()
+    monkeypatch.setattr(ingest, "extract_recipes", lambda t, *, title, config: [])
+    with pytest.raises(MepError):
+        ingest.add_text(conn, {}, "not a recipe at all")
+
+
+def test_add_source_routes_by_kind(monkeypatch, tmp_path):
+    conn = db.connect()
+    monkeypatch.setattr(ingest, "add_video", lambda c, cfg, u: ("video", []))
+    monkeypatch.setattr(ingest, "add_url", lambda c, cfg, u: ("web", []))
+    monkeypatch.setattr(ingest, "add_text", lambda c, cfg, t, title=None: ("text", []))
+    assert ingest.add_source(conn, {}, "https://youtu.be/dQw4w9WgXcQ")[0] == "video"
+    assert ingest.add_source(conn, {}, "https://example.com/recipe")[0] == "web"
+    f = tmp_path / "r.txt"
+    f.write_text("paste me")
+    assert ingest.add_source(conn, {}, str(f))[0] == "text"
+    with pytest.raises(MepError):
+        ingest.add_source(conn, {}, "not-a-url-or-file")
+
+
+def test_insert_recipe_records_source_type():
+    db.init_db()
+    conn = db.connect()
+    rid = db.insert_recipe(
+        conn, video_id="srctype01", title="t", channel="c", url="u", raw_transcript=None,
+        extracted={"dish_name": "d", "ingredients": [], "steps": [], "tags": []},
+        source_type="web",
+    )
+    assert db.get_recipe(conn, rid)["recipe"]["source_type"] == "web"
+    # Default stays youtube for the existing callers.
+    rid2 = _seed_recipe(conn, "srctype02")
+    assert db.get_recipe(conn, rid2)["recipe"]["source_type"] == "youtube"
 
 
 # --- multi-recipe extraction --------------------------------------------------

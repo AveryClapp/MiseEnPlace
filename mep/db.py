@@ -21,6 +21,7 @@ _RECIPE_COLUMNS = {
     "gaps_json": "TEXT",
     "meal_type": "TEXT",
     "health_score": "INTEGER",
+    "source_type": "TEXT",
 }
 
 SCHEMA = """
@@ -40,7 +41,8 @@ CREATE TABLE IF NOT EXISTS recipes (
     macros_json    TEXT,
     gaps_json      TEXT,
     meal_type      TEXT,
-    health_score   INTEGER
+    health_score   INTEGER,
+    source_type    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS ingredients (
@@ -122,6 +124,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         for name, decl in columns.items():
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+    # Recipes predate the multi-source feature; they were all from YouTube. New
+    # inserts always set source_type, so the only NULLs are these legacy rows.
+    conn.execute("UPDATE recipes SET source_type = 'youtube' WHERE source_type IS NULL")
 
 
 def video_exists(conn: sqlite3.Connection, video_id: str) -> bool:
@@ -224,20 +229,18 @@ def insert_recipe(
     url: str | None,
     raw_transcript: str | None,
     extracted: dict,
+    source_type: str = "youtube",
 ) -> int:
-    """Insert a recipe and its children. `extracted` is the parsed Claude dict
-    (or a minimal stub for non-recipe / no-transcript videos). Returns the new
-    recipe id. Runs in a single transaction."""
-    ingredients = extracted.get("ingredients") or []
-    steps = extracted.get("steps") or []
-    tags = extracted.get("tags") or []
-
+    """Insert a recipe and its children. `extracted` is the parsed model dict
+    (or a minimal stub for non-recipe / no-transcript sources). `video_id` is the
+    source's stable id (a YouTube id, a normalized URL, or a text hash). Returns
+    the new recipe id. Runs in a single transaction."""
     with conn:
         cur = conn.execute(
             """INSERT INTO recipes
                (video_id, title, channel, url, dish_name, cook_time,
-                servings, difficulty, raw_transcript)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                servings, difficulty, raw_transcript, source_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 video_id,
                 title,
@@ -248,6 +251,7 @@ def insert_recipe(
                 extracted.get("servings"),
                 extracted.get("difficulty"),
                 raw_transcript,
+                source_type,
             ),
         )
         recipe_id = cur.lastrowid
