@@ -78,12 +78,17 @@ def init():
 @click.argument("source", required=False)
 @click.option("--channel", "channel", help="YouTube channel @handle to ingest.")
 @click.option("--text", "text", default=None, help="Ingest pasted recipe text directly.")
+@click.option(
+    "--image", "images", multiple=True, type=click.Path(exists=True, dir_okay=False),
+    help="Recipe photo(s); repeat to combine pages/frames into one recipe.",
+)
 @click.option("--limit", type=int, default=None, help="Max videos for --channel.")
-def add(source, channel, text, limit):
-    """Ingest a recipe from a YouTube/web URL, a file, or pasted --text.
+def add(source, channel, text, images, limit):
+    """Ingest a recipe from a YouTube/web URL, an image or text file, or pasted text.
 
-    SOURCE may be a YouTube URL, a recipe web page URL, or a path to a text file.
-    Use --channel to ingest a whole YouTube channel, or --text to paste a recipe.
+    SOURCE may be a YouTube URL, a recipe web page URL, or a path to an image or
+    text file. Use --channel for a whole YouTube channel, --image for one or more
+    recipe photos, or --text to paste a recipe.
     """
     config = load_config()
     db.init_db()
@@ -106,12 +111,18 @@ def add(source, channel, text, limit):
             click.echo("No videos found for that channel.")
         return
 
+    if images:
+        _report_add(*ingest.add_images(conn, config, list(images)))
+        return
+
     if text:
         _report_add(*ingest.add_text(conn, config, text))
         return
 
     if not source:
-        raise click.UsageError("Provide a URL or file, --text, or --channel <handle>.")
+        raise click.UsageError(
+            "Provide a URL or file, --image, --text, or --channel <handle>."
+        )
 
     _report_add(*ingest.add_source(conn, config, source))
 
@@ -797,7 +808,7 @@ def _render(data: dict, target_servings=None) -> None:
     meta = []
     if r["channel"]:
         meta.append(r["channel"])
-    source_label = {"web": "web", "text": "pasted"}.get(r["source_type"])
+    source_label = {"web": "web", "text": "pasted", "image": "photo"}.get(r["source_type"])
     if source_label:
         meta.append(source_label)
     if r["meal_type"]:

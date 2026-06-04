@@ -14,10 +14,17 @@ from . import db, web, youtube
 from .classify import classify_recipe
 from .config import require
 from .errors import MepError
-from .extract import extract_recipes
+from .extract import extract_recipes, extract_recipes_from_images
 from .transcript import extract_video_id, fetch_transcript
 
 THROTTLE_SECONDS = 0.5
+
+# Image formats both providers accept. HEIC and friends must be converted first.
+_IMAGE_TYPES = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".webp": "image/webp", ".gif": "image/gif",
+}
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 # Stored when a video has no transcript or is not a recipe: a valid, empty row.
 _EMPTY = {"dish_name": None, "ingredients": [], "steps": [], "tags": []}
@@ -128,10 +135,49 @@ def add_text(conn, config, text, title=None) -> tuple[str, list[Result]]:
     return "added", results
 
 
+def add_images(conn, config, paths, title=None) -> tuple[str, list[Result]]:
+    """Ingest one or more recipe photos. All images go into a single vision call
+    and become one recipe (the model still splits genuinely separate dishes). The
+    id is a hash of the image bytes, so re-adding the same shot is a no-op skip.
+    Raises if a file is the wrong format/size, or no recipe is found."""
+    if not paths:
+        raise MepError("No image given.")
+    images = []
+    digest = hashlib.sha256()
+    for path in paths:
+        media_type = _image_media_type(path)
+        try:
+            data = open(path, "rb").read()
+        except OSError as exc:
+            raise MepError(f"Couldn't read {path}: {exc}")
+        if len(data) > _MAX_IMAGE_BYTES:
+            raise MepError(
+                f"{os.path.basename(path)} is too large "
+                f"({len(data) // (1024 * 1024)} MB; max 5 MB). Shrink it first."
+            )
+        images.append((media_type, data))
+        digest.update(data)
+
+    source_id = "img:" + digest.hexdigest()[:16]
+    if db.video_exists(conn, source_id):
+        return "skipped", []
+    name = title or os.path.basename(paths[0])
+    recipes = extract_recipes_from_images(images, title=name, config=config)
+    if not recipes:
+        raise MepError("No recipe found in that image.")
+    results = _store_recipes(
+        conn, config, source_id=source_id, source_type="image",
+        title=name, channel=None, url=None, raw_text=None, recipes=recipes,
+    )
+    return "added", results
+
+
 def add_source(conn, config, source) -> tuple[str, list[Result]]:
-    """Dispatch a positional add argument: a local file (read as text), a YouTube
-    URL, or a web URL."""
+    """Dispatch a positional add argument: a local image, a local text file, a
+    YouTube URL, or a web URL."""
     if os.path.isfile(source):
+        if _is_image(source):
+            return add_images(conn, config, [source])
         try:
             text = open(source, encoding="utf-8", errors="replace").read()
         except OSError as exc:
@@ -142,9 +188,24 @@ def add_source(conn, config, source) -> tuple[str, list[Result]]:
     if source.startswith(("http://", "https://")):
         return add_url(conn, config, source)
     raise MepError(
-        "Not a recognized URL or file. Pass a YouTube or recipe URL, a file "
-        "path, or use --text."
+        "Not a recognized URL or file. Pass a YouTube or recipe URL, an image or "
+        "text file, or use --text."
     )
+
+
+def _image_media_type(path) -> str:
+    ext = os.path.splitext(path)[1].lower()
+    media_type = _IMAGE_TYPES.get(ext)
+    if not media_type:
+        raise MepError(
+            f"Unsupported image type '{ext or path}'. Use JPG, PNG, WebP, or GIF "
+            "(convert HEIC first)."
+        )
+    return media_type
+
+
+def _is_image(path) -> bool:
+    return os.path.splitext(path)[1].lower() in _IMAGE_TYPES
 
 
 def _is_youtube(source) -> bool:

@@ -626,13 +626,95 @@ def test_add_source_routes_by_kind(monkeypatch, tmp_path):
     monkeypatch.setattr(ingest, "add_video", lambda c, cfg, u: ("video", []))
     monkeypatch.setattr(ingest, "add_url", lambda c, cfg, u: ("web", []))
     monkeypatch.setattr(ingest, "add_text", lambda c, cfg, t, title=None: ("text", []))
+    monkeypatch.setattr(ingest, "add_images", lambda c, cfg, paths: ("image", []))
     assert ingest.add_source(conn, {}, "https://youtu.be/dQw4w9WgXcQ")[0] == "video"
     assert ingest.add_source(conn, {}, "https://example.com/recipe")[0] == "web"
     f = tmp_path / "r.txt"
     f.write_text("paste me")
     assert ingest.add_source(conn, {}, str(f))[0] == "text"
+    img = tmp_path / "card.png"
+    img.write_bytes(b"fake png bytes")
+    assert ingest.add_source(conn, {}, str(img))[0] == "image"  # routed to vision
     with pytest.raises(MepError):
         ingest.add_source(conn, {}, "not-a-url-or-file")
+
+
+# --- image ingestion ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [("a.jpg", "image/jpeg"), ("a.JPEG", "image/jpeg"), ("a.png", "image/png"),
+     ("a.webp", "image/webp"), ("a.gif", "image/gif")],
+)
+def test_image_media_type_accepts_supported(name, expected):
+    assert ingest._image_media_type(name) == expected
+
+
+@pytest.mark.parametrize("name", ["photo.heic", "doc.pdf", "notes.txt", "noext"])
+def test_image_media_type_rejects_unsupported(name):
+    with pytest.raises(MepError):
+        ingest._image_media_type(name)
+
+
+def _patch_vision(monkeypatch, recipes):
+    monkeypatch.setattr(
+        ingest, "extract_recipes_from_images", lambda imgs, *, title, config: recipes
+    )
+    monkeypatch.setattr(
+        ingest, "classify_recipe", lambda d, *, config: {"meal_type": "lunch", "health_score": 5}
+    )
+
+
+def test_add_images_stores_and_is_idempotent(monkeypatch, tmp_path):
+    db.init_db()
+    conn = db.connect()
+    _patch_vision(
+        monkeypatch,
+        [{"dish_name": "Card Soup", "ingredients": [{"name": "water"}], "steps": ["boil"], "tags": []}],
+    )
+    img = tmp_path / "card.png"
+    img.write_bytes(b"\x89PNG fake image data")
+    status, results = ingest.add_images(conn, {}, [str(img)])
+    assert status == "added" and len(results) == 1
+    assert db.get_recipe(conn, results[0][0])["recipe"]["source_type"] == "image"
+    # Same bytes hash to the same id -> idempotent skip.
+    assert ingest.add_images(conn, {}, [str(img)])[0] == "skipped"
+
+
+def test_add_images_combines_multiple_into_one(monkeypatch, tmp_path):
+    db.init_db()
+    conn = db.connect()
+    _patch_vision(
+        monkeypatch,
+        [{"dish_name": "Two Page Stew", "ingredients": [{"name": "beef"}], "steps": ["simmer"], "tags": []}],
+    )
+    p1 = tmp_path / "p1.jpg"
+    p2 = tmp_path / "p2.jpg"
+    p1.write_bytes(b"page one")
+    p2.write_bytes(b"page two")
+    status, results = ingest.add_images(conn, {}, [str(p1), str(p2)])
+    assert status == "added" and len(results) == 1  # one recipe from two images
+
+
+def test_add_images_rejects_oversized(monkeypatch, tmp_path):
+    monkeypatch.setattr(ingest, "_MAX_IMAGE_BYTES", 10)
+    db.init_db()
+    conn = db.connect()
+    big = tmp_path / "big.png"
+    big.write_bytes(b"x" * 50)
+    with pytest.raises(MepError):
+        ingest.add_images(conn, {}, [str(big)])
+
+
+def test_add_images_no_recipe_raises(monkeypatch, tmp_path):
+    db.init_db()
+    conn = db.connect()
+    _patch_vision(monkeypatch, [])
+    img = tmp_path / "blank.png"
+    img.write_bytes(b"not a recipe")
+    with pytest.raises(MepError):
+        ingest.add_images(conn, {}, [str(img)])
 
 
 def test_insert_recipe_records_source_type():

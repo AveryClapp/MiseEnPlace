@@ -8,15 +8,18 @@ are tolerated downstream via .get, so a partial response still stores cleanly.
 import json
 
 from .errors import MepError
-from .llm import complete
+from .llm import complete, complete_vision
 
-SYSTEM_PROMPT = """You extract the structured recipe(s) from a piece of cooking \
-text: a video transcript, a recipe web page, or a pasted note.
+SYSTEM_PROMPT = """You extract the structured recipe(s) from cooking content: a \
+video transcript, a recipe web page, a pasted note, or a photo of a recipe (a \
+cookbook page, a recipe card, or a video frame).
 
-The text is often messy: an auto-generated transcript (no punctuation, run-on, \
-with filler talk and sponsor reads), or a web page with navigation and a long \
-life-story preamble wrapped around the actual recipe. Recover the recipe(s) as \
-best you can.
+The content is often messy: an auto-generated transcript (no punctuation, \
+run-on, with filler talk and sponsor reads), a web page with navigation and a \
+long life-story preamble wrapped around the actual recipe, or a photo where the \
+text is at an angle or handwritten. When several images are given, they are \
+pages or frames of the SAME recipe unless they clearly show different dishes. \
+Recover the recipe(s) as best you can.
 
 Return ONLY a single JSON object, no markdown fences and no commentary, with \
 exactly this shape:
@@ -61,6 +64,19 @@ def extract_recipes(transcript: str, *, title: str | None, config: dict) -> list
     recipe dicts (usually one); an empty list when the video is not a recipe."""
     user_content = f"Source title: {title or '(unknown)'}\n\n{transcript}"
     text = complete(config, system=SYSTEM_PROMPT, user=user_content, max_tokens=4096)
+    return _parse_recipes(_parse_json(text))
+
+
+def extract_recipes_from_images(images: list, *, title: str | None, config: dict) -> list[dict]:
+    """Extract one or more recipes from photo(s) of a recipe. `images` is a list
+    of (media_type, raw_bytes). Returns parsed recipe dicts (empty if none)."""
+    user_content = (
+        f"Source: {title or 'a photo of a recipe'}\n\n"
+        "Read the recipe(s) in the attached image(s) and extract them."
+    )
+    text = complete_vision(
+        config, system=SYSTEM_PROMPT, user=user_content, images=images, max_tokens=4096
+    )
     return _parse_recipes(_parse_json(text))
 
 

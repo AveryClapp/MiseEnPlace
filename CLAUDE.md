@@ -22,14 +22,15 @@ mep/
                  set-servings, export, delete, shopping-list, plan, cook, adapt)
   config.py      ~/.mep paths, config load/validate, model id, legacy migration
   errors.py      MepError — user-fixable problems, caught in cli.main()
-  llm.py         complete: shared model call (Anthropic/OpenAI), retry + truncation guard
+  llm.py         complete / complete_vision: shared model call (Anthropic/OpenAI),
+                 retry + truncation guard; vision sends base64 image blocks
   db.py          Schema, inserts, FTS5 search, plan/component storage, read queries
   transcript.py  URL -> video_id, transcript fetch (None if unavailable)
   web.py         Recipe web page -> schema.org JSON-LD (or readable text fallback)
-  extract.py     Text -> Claude -> parsed recipe list (one or more)
+  extract.py     Text or image(s) -> Claude -> parsed recipe list (one or more)
   youtube.py     oEmbed metadata (keyless) + Data API channel walk
   ingest.py      Orchestration: _store_recipes + add_video/add_channel/add_url/
-                 add_text/add_source (dispatch a file, YouTube URL, or web URL)
+                 add_text/add_images/add_source (dispatch a file, URL, or images)
   plan.py        Recipe -> Claude -> cooking timeline (experimental)
   cook.py        Live step-by-step walkthrough + pure timer helpers
   scale.py       Best-effort serving-size quantity scaling (pure)
@@ -50,14 +51,16 @@ docs/plans/      Design docs
   exit 1. Let real bugs raise a normal traceback — don't wrap them.
 - **`video_id` is the idempotency key** (`UNIQUE` in `recipes`), now holding a
   source-appropriate stable id: a YouTube id, a `web.canonical_url` (normalized
-  URL), or `text:<sha256[:16]>`. Adds check existence first; re-adding is a no-op
-  skip. `source_type` ('youtube' / 'web' / 'text') records the origin; legacy
-  rows backfill to 'youtube' in `_migrate`.
+  URL), `text:<sha256[:16]>`, or `img:<sha256[:16]>`. Adds check existence first;
+  re-adding is a no-op skip. `source_type` ('youtube' / 'web' / 'text' / 'image')
+  records the origin; legacy rows backfill to 'youtube' in `_migrate`.
 - **Sources share one tail.** `ingest._store_recipes` does extract -> classify ->
   insert for every source; the `add_*` functions only differ in how they fetch
   text and an id. `add_url` prefers schema.org JSON-LD (`web.py`, no extraction
-  call) and falls back to the LLM over page text. Web/text adds raise on a
-  non-recipe (no stub); only YouTube channel syncs keep stubs to avoid re-fetch.
+  call) and falls back to the LLM over page text. `add_images` sends photo(s)
+  through `llm.complete_vision` (jpg/png/webp/gif, <=5 MB, local files; HEIC and
+  oversized error clearly). Web/text/image adds raise on a non-recipe (no stub);
+  only YouTube channel syncs keep stubs to avoid re-fetch.
 - **A video may yield multiple recipes.** Extraction returns a list (conservative
   split: only genuinely independent dishes, never sub-preparations). The first
   recipe keeps the real `video_id`; extras get a `#N` suffix. The base `video_id`

@@ -61,6 +61,8 @@ key. It is only required to walk a channel's uploads.
 mep add https://www.youtube.com/watch?v=VIDEO_ID    # a YouTube video
 mep add https://www.seriouseats.com/some-recipe      # a recipe web page
 mep add recipe.txt                                   # a local text file
+mep add card.png                                     # a photo of a recipe
+mep add --image p1.jpg --image p2.jpg               # multi-page spread -> one recipe
 mep add --text "2 cups flour, 1 egg, ..."           # pasted recipe text
 mep add --channel @JKenjiLopezAlt --limit 10        # latest 10 from a channel
 mep add --channel @JKenjiLopezAlt                    # whole channel
@@ -181,11 +183,17 @@ transcripts are stored as empty entries (not errors) so they aren't re-fetched.
   at all. Pages without it fall back to extracting from the page text.
 - **A local text file** (`mep add recipe.txt`) **or pasted text**
   (`mep add --text "..."`), for recipes from anywhere else.
+- **A photo of a recipe** (`mep add card.png`, or `--image` repeated for a
+  multi-page spread), read by a vision model. Cookbook pages, recipe cards, and
+  screenshots all work; for a YouTube Short whose recipe is on screen rather than
+  spoken, screenshot the frame and add it. Supported formats are JPG, PNG, WebP,
+  and GIF (convert HEIC first); images over 5 MB should be shrunk.
 
 Each is de-duplicated by a stable id (the video id, the normalized URL, or a hash
-of the text), so re-adding the same source is a no-op. `mep show` notes where a
-recipe came from. Adding a web page or text that isn't a recipe is a clean error,
-not a stored stub (only channel syncs keep stubs, to avoid re-fetching duds).
+of the text or image bytes), so re-adding the same source is a no-op. `mep show`
+notes where a recipe came from. Adding a page, text, or image that isn't a recipe
+is a clean error, not a stored stub (only channel syncs keep stubs, to avoid
+re-fetching duds).
 
 ## Cost
 
@@ -197,7 +205,8 @@ cost is the model calls; storage and search are local and free.
   small classification call per recipe for meal type and health score. A
   `--channel` walk is just this times the number of videos. Web pages that embed
   schema.org recipe data skip the extraction call entirely (only the small
-  classification call remains); text and JSON-LD-less pages cost like a video.
+  classification call remains); text, photos, and JSON-LD-less pages cost like a
+  video (one extraction/vision call plus classification).
 - **On-demand features** (`plan`, `show --parts`, `show --macros`,
   `show --check`, `shopping-list`, `adapt`, and `cook` with `--have`/`--sub`)
   each make one additional call when first used, on the same order as an
@@ -233,8 +242,9 @@ mep add --channel @aragusea --limit 5                 # latest 5 from Adam Ragus
 
 ## How it works
 
-`source → text (YouTube transcript, web page, or pasted) → an LLM (Claude or
-OpenAI), or a web page's embedded schema.org recipe → JSON → SQLite`. Search uses
+`source → text or image (YouTube transcript, web page, pasted text, or a photo)
+→ an LLM (Claude or OpenAI), or a web page's embedded schema.org recipe → JSON →
+SQLite`. Search uses
 SQLite FTS5 over dish name, ingredients, and channel. Vague quantities like "a
 handful" are stored verbatim; nothing is normalized.
 
