@@ -99,22 +99,30 @@ CREATE VIRTUAL TABLE IF NOT EXISTS recipe_fts USING fts5(
 """
 
 
+_schema_ready = False
+
+
 def connect() -> sqlite3.Connection:
+    """Open a connection, ensuring the schema exists and is migrated once per
+    process. Self-healing, so every command works on an older database, not only
+    the ones that happen to call init_db()."""
+    global _schema_ready
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    if not _schema_ready:
+        conn.executescript(SCHEMA)
+        _migrate(conn)
+        conn.commit()
+        _schema_ready = True
     return conn
 
 
 def init_db() -> None:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = connect()
-    try:
-        conn.executescript(SCHEMA)
-        _migrate(conn)
-        conn.commit()
-    finally:
-        conn.close()
+    """Explicit setup entry point (used by `mep init`). connect() already ensures
+    the schema, so this just triggers that once."""
+    connect().close()
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

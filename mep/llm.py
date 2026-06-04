@@ -29,10 +29,15 @@ def _retryable_types() -> tuple:
     return tuple(types)
 
 
-_RETRYABLE = _retryable_types()
+_RETRYABLE: tuple | None = None
 
 
 def is_retryable(exc: Exception) -> bool:
+    # Computed lazily so importing this module (and thus the CLI) doesn't pull in
+    # the heavy anthropic/openai SDKs until a model call actually happens.
+    global _RETRYABLE
+    if _RETRYABLE is None:
+        _RETRYABLE = _retryable_types()
     return bool(_RETRYABLE) and isinstance(exc, _RETRYABLE)
 
 

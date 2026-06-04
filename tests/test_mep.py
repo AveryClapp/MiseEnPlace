@@ -6,6 +6,7 @@ importing mep modules that read config paths.
 """
 
 import os
+import sqlite3
 import tempfile
 
 import pytest
@@ -489,6 +490,36 @@ def test_save_get_components_roundtrip():
     with conn:
         conn.execute("DELETE FROM recipes WHERE id = ?", (rid,))
     assert db.get_components(conn, rid) == []
+
+
+# --- schema self-heal on connect ----------------------------------------------
+
+
+def test_connect_migrates_an_older_database(tmp_path, monkeypatch):
+    # A database created by an older version: the original columns, none of the
+    # ones added later (times_cooked, macros_json, gaps_json, meal_type, ...).
+    legacy = tmp_path / "old.db"
+    raw = sqlite3.connect(legacy)
+    raw.execute(
+        "CREATE TABLE recipes (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " video_id TEXT UNIQUE NOT NULL, title TEXT, channel TEXT, url TEXT,"
+        " dish_name TEXT, cook_time TEXT, servings TEXT, difficulty TEXT,"
+        " raw_transcript TEXT, created_at TEXT)"
+    )
+    raw.execute("INSERT INTO recipes (video_id, dish_name) VALUES ('old1', 'Old Soup')")
+    raw.commit()
+    raw.close()
+
+    monkeypatch.setattr(db, "DB_PATH", legacy)
+    monkeypatch.setattr(db, "_schema_ready", False)
+
+    # connect() must add the missing columns, so the new commands don't crash.
+    conn = db.connect()
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(recipes)")}
+    assert {"meal_type", "health_score", "source_type", "gaps_json", "times_cooked"} <= cols
+    assert db.recipe_ids_for_classify(conn) == [1]  # no longer raises "no such column"
+    # Legacy rows are backfilled as YouTube.
+    assert conn.execute("SELECT source_type FROM recipes WHERE id=1").fetchone()[0] == "youtube"
 
 
 # --- web ingestion (JSON-LD parsing) ------------------------------------------
