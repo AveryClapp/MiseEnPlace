@@ -428,6 +428,31 @@ def replace_recipe_content(
         conn.execute("UPDATE recipes SET macros_json = NULL WHERE id = ?", (recipe_id,))
 
 
+def delete_recipe(conn: sqlite3.Connection, recipe_id: int) -> None:
+    """Delete a recipe and everything stored with it. Child tables (ingredients,
+    steps, tags, plan_steps, recipe_components) cascade via foreign keys; the
+    contentless FTS row can't cascade, so it's removed explicitly with the
+    'delete' command using its originally-indexed values."""
+    with conn:
+        old = conn.execute(
+            "SELECT dish_name, channel FROM recipes WHERE id = ?", (recipe_id,)
+        ).fetchone()
+        old_blob = " ".join(
+            r["name"]
+            for r in conn.execute(
+                "SELECT name FROM ingredients WHERE recipe_id = ? AND name IS NOT NULL"
+                " ORDER BY id",
+                (recipe_id,),
+            )
+        )
+        conn.execute(
+            "INSERT INTO recipe_fts (recipe_fts, rowid, dish_name, channel, ingredients)"
+            " VALUES ('delete', ?, ?, ?, ?)",
+            (recipe_id, old["dish_name"] or "", old["channel"] or "", old_blob),
+        )
+        conn.execute("DELETE FROM recipes WHERE id = ?", (recipe_id,))
+
+
 def list_recipes(
     conn: sqlite3.Connection, tag: str | None = None, limit: int | None = None
 ) -> list[sqlite3.Row]:

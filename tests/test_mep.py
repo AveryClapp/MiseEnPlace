@@ -12,7 +12,7 @@ import pytest
 
 os.environ["MEP_HOME"] = tempfile.mkdtemp()
 
-from mep import adapt, cli, config, cook, db, scale  # noqa: E402
+from mep import adapt, cli, config, cook, db, scale, shopping  # noqa: E402
 from mep.components import _normalize_components  # noqa: E402
 from mep.nutrition import _normalize as _normalize_macros  # noqa: E402
 from mep.errors import MepError  # noqa: E402
@@ -487,6 +487,109 @@ def test_save_get_components_roundtrip():
     with conn:
         conn.execute("DELETE FROM recipes WHERE id = ?", (rid,))
     assert db.get_components(conn, rid) == []
+
+
+# --- delete -------------------------------------------------------------------
+
+
+def test_delete_recipe_removes_children_and_fts():
+    db.init_db()
+    conn = db.connect()
+    rid = db.insert_recipe(
+        conn,
+        video_id="delvid00001",
+        title="Doomed",
+        channel="Chef",
+        url="u",
+        raw_transcript="x",
+        extracted={
+            "dish_name": "Garlic Soup",
+            "ingredients": [{"name": "garlic", "quantity": "6", "unit": "cloves", "prep": None}],
+            "steps": ["simmer"],
+            "tags": ["soup"],
+        },
+    )
+    db.save_plan(conn, rid, [{"instruction": "a", "duration_minutes": 1, "mode": "active"}])
+    assert any(r["id"] == rid for r in db.search(conn, "garlic"))
+
+    db.delete_recipe(conn, rid)
+
+    assert db.get_recipe(conn, rid) is None
+    assert db.get_plan(conn, rid) == []  # children cascaded
+    assert not any(r["id"] == rid for r in db.search(conn, "garlic"))  # FTS gone
+
+
+# --- export to markdown -------------------------------------------------------
+
+
+def test_to_markdown_renders_card():
+    data = {
+        "recipe": {
+            "dish_name": "Garlic Butter Pasta",
+            "title": "Best Pasta",
+            "channel": "Test Kitchen",
+            "url": "https://youtu.be/x",
+            "cook_time": "20 minutes",
+            "servings": "2",
+            "difficulty": "easy",
+            "times_cooked": 3,
+        },
+        "ingredients": [
+            {"name": "spaghetti", "quantity": "200", "unit": "g", "prep": None},
+            {"name": "garlic", "quantity": "a handful", "unit": None, "prep": "minced"},
+        ],
+        "steps": [
+            {"step_number": 1, "instruction": "boil the pasta"},
+            {"step_number": 2, "instruction": "toss together"},
+        ],
+        "tags": ["italian", "pasta"],
+    }
+    md = cli._to_markdown(data)
+    assert md.startswith("# Garlic Butter Pasta\n")
+    assert "cooked 3x" in md
+    assert "- 200 g spaghetti" in md
+    assert "- a handful garlic, minced" in md  # verbatim + prep
+    assert "1. boil the pasta" in md
+    assert "Tags: italian, pasta" in md
+    assert md.endswith("\n")
+
+
+def test_to_markdown_untitled_no_recipe():
+    data = {
+        "recipe": {
+            "dish_name": None, "title": None, "channel": None, "url": None,
+            "cook_time": None, "servings": None, "difficulty": None, "times_cooked": 0,
+        },
+        "ingredients": [],
+        "steps": [],
+        "tags": [],
+    }
+    assert cli._to_markdown(data) == "# (untitled)\n"
+
+
+# --- shopping list normalization ----------------------------------------------
+
+
+def test_normalize_shopping_drops_empties():
+    sections = shopping._normalize(
+        {
+            "sections": [
+                {"aisle": " Produce ", "items": ["2 lemons", "", "6 cloves garlic"]},
+                {"aisle": "Dairy", "items": []},  # dropped: no items
+                {"items": ["salt"]},  # missing aisle -> Other
+                "junk",  # dropped
+            ]
+        }
+    )
+    assert sections == [
+        {"aisle": "Produce", "items": ["2 lemons", "6 cloves garlic"]},
+        {"aisle": "Other", "items": ["salt"]},
+    ]
+
+
+def test_normalize_shopping_empty_raises():
+    with pytest.raises(MepError):
+        shopping._normalize({"sections": [{"aisle": "Produce", "items": []}]})
 
 
 # --- adapt: save-copy + overwrite ---------------------------------------------

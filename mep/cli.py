@@ -1,12 +1,13 @@
 """Click entry points for mep."""
 
 import json
+from pathlib import Path
 
 import click
 
 from . import adapt as adapt_mod
 from . import cook as cook_mod
-from . import db, ingest, scale
+from . import db, ingest, scale, shopping
 from .components import analyze_components
 from .nutrition import estimate_macros
 from .config import (
@@ -144,6 +145,60 @@ def set_servings(recipe_id, servings):
         raise MepError(f"No recipe with id {recipe_id}.")
     db.set_servings(conn, recipe_id, servings)
     click.echo(f"Recipe {recipe_id} now makes {servings} servings.")
+
+
+@cli.command()
+@click.argument("recipe_id", type=int)
+@click.option(
+    "-o", "--output", type=click.Path(dir_okay=False, writable=True), default=None,
+    help="Write to a file instead of stdout.",
+)
+def export(recipe_id, output):
+    """Export a recipe as Markdown (to stdout, or a file with -o)."""
+    conn = db.connect()
+    data = db.get_recipe(conn, recipe_id)
+    if data is None:
+        raise MepError(f"No recipe with id {recipe_id}.")
+    md = _to_markdown(data)
+    if output:
+        Path(output).write_text(md)
+        click.echo(f"Wrote {output}.")
+    else:
+        click.echo(md, nl=False)
+
+
+@cli.command()
+@click.argument("recipe_id", type=int)
+@click.option("-f", "--force", is_flag=True, help="Skip the confirmation prompt.")
+def delete(recipe_id, force):
+    """Delete a recipe and everything stored with it."""
+    conn = db.connect()
+    data = db.get_recipe(conn, recipe_id)
+    if data is None:
+        raise MepError(f"No recipe with id {recipe_id}.")
+    name = data["recipe"]["dish_name"] or data["recipe"]["title"] or "(untitled)"
+    if not force:
+        click.confirm(f"Delete recipe {recipe_id} ({name})?", abort=True)
+    db.delete_recipe(conn, recipe_id)
+    click.echo(f"Deleted recipe {recipe_id} ({name}).")
+
+
+@cli.command(name="shopping-list")
+@click.argument("recipe_ids", type=int, nargs=-1, required=True)
+def shopping_list(recipe_ids):
+    """Combine one or more recipes into a single grocery shopping list."""
+    config = load_config()
+    conn = db.connect()
+    recipes = []
+    for rid in recipe_ids:
+        data = db.get_recipe(conn, rid)
+        if data is None:
+            raise MepError(f"No recipe with id {rid}.")
+        recipes.append(data)
+    require_api_key(config)
+    click.echo("Building shopping list...")
+    sections = shopping.build_list(recipes, config=config)
+    _render_shopping(recipes, sections)
 
 
 @cli.command()
@@ -519,6 +574,59 @@ def _adapted_data(orig: dict, adapted: dict) -> dict:
     ]
     tags = [t for t in (adapted.get("tags") or []) if t]
     return {"recipe": recipe, "ingredients": ingredients, "steps": steps, "tags": tags}
+
+
+def _to_markdown(data: dict) -> str:
+    """Render a recipe as a portable Markdown card. Pure formatting."""
+    r = data["recipe"]
+    title = r["dish_name"] or r["title"] or "(untitled)"
+    lines = [f"# {title}", ""]
+
+    meta = []
+    if r["channel"]:
+        meta.append(r["channel"])
+    for field in ("cook_time", "servings", "difficulty"):
+        if r[field]:
+            meta.append(f"{field.replace('_', ' ')}: {r[field]}")
+    if r["times_cooked"]:
+        meta.append(f"cooked {r['times_cooked']}x")
+    if meta:
+        lines += ["*" + " · ".join(meta) + "*", ""]
+    if r["url"]:
+        lines += [r["url"], ""]
+    if data["tags"]:
+        lines += ["Tags: " + ", ".join(data["tags"]), ""]
+
+    if data["ingredients"]:
+        lines += ["## Ingredients", ""]
+        lines += [f"- {_ingredient_line(ing)}" for ing in data["ingredients"]]
+        lines.append("")
+    if data["steps"]:
+        lines += ["## Steps", ""]
+        lines += [f"{s['step_number']}. {s['instruction']}" for s in data["steps"]]
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_shopping(recipes: list[dict], sections: list[dict]) -> None:
+    names = [
+        r["recipe"]["dish_name"] or r["recipe"]["title"] or "recipe" for r in recipes
+    ]
+    plural = "" if len(recipes) == 1 else "s"
+    click.echo()
+    click.secho(f"Shopping list — {len(recipes)} recipe{plural}", bold=True)
+    click.echo("  " + ", ".join(names))
+    click.echo()
+    for sec in sections:
+        click.secho(f"  {sec['aisle']}", underline=True)
+        for item in sec["items"]:
+            click.echo(f"    - {item}")
+        click.echo()
+    click.secho(
+        "  Combined amounts are estimates — double-check before you shop.", fg="yellow"
+    )
+    click.echo()
 
 
 def _render(data: dict, target_servings=None) -> None:

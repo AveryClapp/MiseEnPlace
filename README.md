@@ -67,6 +67,9 @@ mep show 42                                           # full recipe
 mep show 42 --servings 8                              # scale ingredient amounts
 mep show 42 --macros                                 # estimated nutrition breakdown
 mep set-servings 42 4                                 # record how many it makes
+mep export 42                                         # print as Markdown (or -o file.md)
+mep delete 42                                          # remove a recipe (asks first; -f to skip)
+mep shopping-list 42 7 13                              # one combined grocery list
 
 mep plan 42                                          # AI cooking timeline (experimental)
 mep plan 42 --servings 8                             # ...scaled to 8 servings
@@ -116,11 +119,35 @@ in memory for a single cook without saving anything. These are experimental and
 use Claude; the rewrite is intentionally light (it shifts and trims the recipe,
 it doesn't reinvent it).
 
+`export` prints a recipe as a portable Markdown card to stdout, or writes it to
+a file with `-o`. `delete` removes a recipe and everything stored with it
+(ingredients, steps, tags, cached plan, components, macros); it asks first unless
+you pass `-f`. `shopping-list` takes one or more recipe ids and makes a single
+model call to merge their ingredients into one grocery list, summing compatible
+amounts and grouping by aisle. The combined amounts are estimates shown only on
+screen; nothing in the database is normalized or changed.
+
 Channel ingestion is idempotent: videos already stored are skipped, so you can
 re-run it to pick up only what's new. Non-recipe videos and videos without
 transcripts are stored as empty entries (not errors) so they aren't re-fetched.
 
-**Cost** per video empirically is around $0.05, maybe more depending on length.
+## Cost
+
+Everything runs on your own API key, so you pay the provider directly. The only
+cost is the model calls; storage and search are local and free.
+
+- **Adding a video** is the main cost: one extraction call, empirically around
+  **$0.05** with the default Anthropic model, more for very long videos. A
+  `--channel` walk is just this times the number of videos.
+- **On-demand features** (`plan`, `show --parts`, `show --macros`,
+  `shopping-list`, `adapt`, and `cook` with `--have`/`--sub`) each make one
+  additional call when first used, on the same order as an extraction or less.
+- **Caching keeps it one-and-done.** Plans, components, and macros are stored
+  after the first request and reused for free; `search`, `list`, `show`, and a
+  cached `cook` never call a model at all. Features you never touch cost nothing.
+
+Numbers are rough and depend on the provider, model (`EXTRACTION_MODEL`), and
+recipe length. OpenAI (`gpt-4o`) lands in a similar range.
 
 ## Channels to try
 

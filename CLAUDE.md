@@ -32,6 +32,8 @@ mep/
   scale.py       Best-effort serving-size quantity scaling (pure)
   components.py  Recipe -> Claude -> component breakdown (for adapt)
   adapt.py       Recipe -> Claude -> rewrite around what you have (experimental)
+  nutrition.py   Recipe -> Claude -> macro estimate (lazy, cached)
+  shopping.py    Recipes -> Claude -> one combined grocery list (display-only)
 tests/           Offline unit tests (no network, no keys)
 docs/plans/      Design docs
 ```
@@ -51,7 +53,9 @@ docs/plans/      Design docs
   from re-fetching duds.
 - **FTS:** `recipe_fts` is a contentless FTS5 table keyed by `rowid = recipes.id`,
   populated inside the same transaction as the recipe insert. If you add a
-  searchable field, update both the schema and `insert_recipe`.
+  searchable field, update both the schema and `insert_recipe`. Contentless rows
+  don't cascade or UPDATE: removing one needs the special `'delete'` command with
+  the originally-indexed values (see `delete_recipe` / `replace_recipe_content`).
 - **Two YouTube paths:** oEmbed (keyless, single-video metadata) vs Data API
   (needs `YOUTUBE_API_KEY`, channel ingestion only). Keep single-video adds
   working without a YouTube key.
