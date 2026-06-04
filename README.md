@@ -76,6 +76,10 @@ mep discover --type dinner --healthy                 # a random healthy dinner
 mep discover --indulgent                             # something to pig out on
 mep discover -i chicken -i garlic -n 3               # 3 that use both
 mep classify                                         # backfill meal type + health
+
+mep add <url> --pair                                 # ...also suggest + link pairings
+mep pair 42                                          # pair one existing recipe
+mep pair --all                                       # build the whole pairing graph
 mep show 42                                           # full recipe
 mep show 42 --servings 8                              # scale ingredient amounts
 mep show 42 --macros                                 # estimated nutrition breakdown
@@ -132,6 +136,14 @@ overwrite the original, or discard it. `cook --have/--sub` does the same rewrite
 in memory for a single cook without saving anything. These are experimental and
 use Claude; the rewrite is intentionally light (it shifts and trims the recipe,
 it doesn't reinvent it).
+
+Pairing answers "what do I serve with this?" It is opt-in (one extra small
+call): `mep add <source> --pair` computes pairings as you ingest, or `mep pair
+<id>` / `mep pair --all` does it on demand for recipes you already have. Each
+recipe gets a few generic ideas (a side, a drink, a finishing touch) plus links
+to recipes already in your collection that go well with it. Those links are
+mutual edges in a "goes well with" graph that fills in as you pair more recipes,
+and they show up automatically under "Serve with" and "Pairs with" in `mep show`.
 
 `discover` picks a random recipe from your collection, optionally filtered. Use
 `--type` (breakfast, lunch, dinner, snack, dessert), `--healthy` (health score
@@ -208,9 +220,9 @@ cost is the model calls; storage and search are local and free.
   classification call remains); text, photos, and JSON-LD-less pages cost like a
   video (one extraction/vision call plus classification).
 - **On-demand features** (`plan`, `show --parts`, `show --macros`,
-  `show --check`, `shopping-list`, `adapt`, and `cook` with `--have`/`--sub`)
-  each make one additional call when first used, on the same order as an
-  extraction or less.
+  `show --check`, `shopping-list`, `adapt`, pairing via `--pair`/`mep pair`, and
+  `cook` with `--have`/`--sub`) each make one additional call when first used, on
+  the same order as an extraction or less.
 - **Caching keeps it one-and-done.** Plans, components, macros, and gap checks
   are stored after the first request and reused for free; `search`, `list`,
   `show`, and a cached `cook` never call a model at all. Features you never touch

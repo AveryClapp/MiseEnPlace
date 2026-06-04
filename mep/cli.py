@@ -85,8 +85,12 @@ def init():
     "--image", "images", multiple=True, type=click.Path(exists=True, dir_okay=False),
     help="Recipe photo(s); repeat to combine pages/frames into one recipe.",
 )
+@click.option(
+    "--pair", is_flag=True,
+    help="Also suggest pairings and link to recipes you already have (extra call).",
+)
 @click.option("--limit", type=int, default=None, help="Max videos for --channel.")
-def add(source, channel, text, images, limit):
+def add(source, channel, text, images, pair, limit):
     """Ingest a recipe from a YouTube/web URL, an image or text file, or pasted text.
 
     SOURCE may be a YouTube URL, a recipe web page URL, or a path to an image or
@@ -110,24 +114,33 @@ def add(source, channel, text, images, limit):
             else:
                 label = title or video_id
             click.echo(f"  [{status:12}] {label}")
+            if pair and status == "added":
+                _pair_new(conn, config, results)
         if not any_seen:
             click.echo("No videos found for that channel.")
         return
 
     if images:
-        _report_add(*ingest.add_images(conn, config, list(images)))
-        return
-
-    if text:
-        _report_add(*ingest.add_text(conn, config, text))
-        return
-
-    if not source:
+        status, results = ingest.add_images(conn, config, list(images))
+    elif text:
+        status, results = ingest.add_text(conn, config, text)
+    elif source:
+        status, results = ingest.add_source(conn, config, source)
+    else:
         raise click.UsageError(
             "Provide a URL or file, --image, --text, or --channel <handle>."
         )
 
-    _report_add(*ingest.add_source(conn, config, source))
+    _report_add(status, results)
+    if pair and status == "added":
+        _pair_new(conn, config, results)
+
+
+def _pair_new(conn, config, results) -> None:
+    for recipe_id, dish, _meal_type, _health in results:
+        if dish:  # skip empty stubs
+            click.echo(f"  finding pairings for {dish}...")
+            ingest.pair_recipe(conn, config, recipe_id)
 
 
 def _report_add(status, results) -> None:
@@ -296,6 +309,35 @@ def classify_cmd(reclassify):
     click.echo(f"Classified {len(ids)} recipe(s).")
 
 
+@cli.command(name="pair")
+@click.argument("recipe_ids", type=int, nargs=-1)
+@click.option("--all", "repair", is_flag=True, help="Re-pair every recipe, not just unpaired ones.")
+def pair_cmd(recipe_ids, repair):
+    """Suggest pairings and build the 'goes well with' graph (opt-in).
+
+    Give recipe ids, or use --all to (re)pair the whole collection. With no
+    arguments, pairs recipes that don't have pairings yet.
+    """
+    config = load_config()
+    conn = db.connect()
+    if recipe_ids:
+        ids = list(recipe_ids)
+        for rid in ids:
+            if db.get_recipe(conn, rid) is None:
+                raise MepError(f"No recipe with id {rid}.")
+    else:
+        ids = db.recipe_ids_for_pairing(conn, include_paired=repair)
+    if not ids:
+        click.echo("All recipes already have pairings (use --all to redo).")
+        return
+    require_api_key(config)
+    for rid in ids:
+        name = db.get_recipe(conn, rid)["recipe"]["dish_name"] or f"recipe {rid}"
+        click.echo(f"  pairing {name}...")
+        ingest.pair_recipe(conn, config, rid)
+    click.echo(f"Paired {len(ids)} recipe(s).")
+
+
 @cli.command()
 @click.argument("recipe_id", type=int)
 @click.option("--servings", type=int, default=None, help="Scale ingredients to N servings.")
@@ -320,7 +362,7 @@ def show(recipe_id, servings, parts, macros, check):
     if check:
         _render_gaps(data["recipe"], _ensure_gaps(conn, config, data))
         return
-    _render(data, servings)
+    _render(data, servings, _gather_pairings(conn, recipe_id))
 
 
 @cli.command()
@@ -802,7 +844,16 @@ def _render_shopping(recipes: list[dict], sections: list[dict]) -> None:
     click.echo()
 
 
-def _render(data: dict, target_servings=None) -> None:
+def _gather_pairings(conn, recipe_id):
+    """Collect a recipe's pairings for display, or None if it has none."""
+    generic = db.get_pairings(conn, recipe_id)
+    edges = db.get_pairing_edges(conn, recipe_id)
+    if not generic and not edges:
+        return None
+    return {"generic": generic or [], "edges": edges}
+
+
+def _render(data: dict, target_servings=None, pairings=None) -> None:
     r = data["recipe"]
     title = r["dish_name"] or r["title"] or "(untitled)"
     click.echo()
@@ -845,6 +896,21 @@ def _render(data: dict, target_servings=None) -> None:
         click.secho("Steps", underline=True)
         for step in data["steps"]:
             click.echo(f"  {step['step_number']}. {step['instruction']}")
+
+    if pairings:
+        if pairings["generic"]:
+            click.echo()
+            click.secho("Serve with", underline=True)
+            for item in pairings["generic"]:
+                why = f" ({item['why']})" if item.get("why") else ""
+                click.echo(f"  - {item['name']}{why}")
+        if pairings["edges"]:
+            click.echo()
+            click.secho("Pairs with (from your collection)", underline=True)
+            for edge in pairings["edges"]:
+                why = f" ({edge['reason']})" if edge.get("reason") else ""
+                name = edge["dish_name"] or f"recipe {edge['id']}"
+                click.echo(f"  {edge['id']:>4}  {name}{why}")
 
     if not data["ingredients"] and not data["steps"]:
         click.echo()

@@ -22,6 +22,7 @@ _RECIPE_COLUMNS = {
     "meal_type": "TEXT",
     "health_score": "INTEGER",
     "source_type": "TEXT",
+    "pairings_json": "TEXT",
 }
 
 SCHEMA = """
@@ -42,7 +43,8 @@ CREATE TABLE IF NOT EXISTS recipes (
     gaps_json      TEXT,
     meal_type      TEXT,
     health_score   INTEGER,
-    source_type    TEXT
+    source_type    TEXT,
+    pairings_json  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS ingredients (
@@ -90,6 +92,15 @@ CREATE TABLE IF NOT EXISTS recipe_components (
     purpose          TEXT,
     ingredients_json TEXT,
     make_steps_json  TEXT
+);
+
+-- Undirected "pairs well with" graph between recipes in the collection. Each
+-- edge is stored once with recipe_a < recipe_b; both endpoints cascade-delete.
+CREATE TABLE IF NOT EXISTS recipe_pairings (
+    recipe_a INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+    recipe_b INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+    reason   TEXT,
+    PRIMARY KEY (recipe_a, recipe_b)
 );
 
 -- Contentless FTS index keyed by rowid = recipes.id.
@@ -201,6 +212,105 @@ def save_classification(
             "UPDATE recipes SET meal_type = ?, health_score = ? WHERE id = ?",
             (meal_type, health_score, recipe_id),
         )
+
+
+def save_pairings(conn: sqlite3.Connection, recipe_id: int, generic: list) -> None:
+    """Store a recipe's generic (non-collection) pairing ideas."""
+    with conn:
+        conn.execute(
+            "UPDATE recipes SET pairings_json = ? WHERE id = ?",
+            (json.dumps(generic), recipe_id),
+        )
+
+
+def get_pairings(conn: sqlite3.Connection, recipe_id: int) -> list | None:
+    """Return the generic pairing ideas, or None if never computed."""
+    row = conn.execute(
+        "SELECT pairings_json FROM recipes WHERE id = ?", (recipe_id,)
+    ).fetchone()
+    if row is None or row["pairings_json"] is None:
+        return None
+    return json.loads(row["pairings_json"])
+
+
+def add_pairing_edge(
+    conn: sqlite3.Connection, a: int, b: int, reason: str | None
+) -> None:
+    """Add an undirected pairing edge between two recipes (stored once, a<b)."""
+    if a == b:
+        return
+    lo, hi = (a, b) if a < b else (b, a)
+    with conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO recipe_pairings (recipe_a, recipe_b, reason)"
+            " VALUES (?, ?, ?)",
+            (lo, hi, reason),
+        )
+
+
+def get_pairing_edges(conn: sqlite3.Connection, recipe_id: int) -> list[dict]:
+    """Return this recipe's pairing partners: [{id, dish_name, reason}, ...]."""
+    rows = conn.execute(
+        "SELECT CASE WHEN p.recipe_a = ? THEN p.recipe_b ELSE p.recipe_a END AS other,"
+        "       p.reason FROM recipe_pairings p"
+        " WHERE p.recipe_a = ? OR p.recipe_b = ?",
+        (recipe_id, recipe_id, recipe_id),
+    ).fetchall()
+    out = []
+    for row in rows:
+        dish = conn.execute(
+            "SELECT dish_name FROM recipes WHERE id = ?", (row["other"],)
+        ).fetchone()
+        out.append(
+            {"id": row["other"], "dish_name": dish["dish_name"] if dish else None,
+             "reason": row["reason"]}
+        )
+    return out
+
+
+def clear_pairings(conn: sqlite3.Connection, recipe_id: int) -> None:
+    """Drop a recipe's generic ideas and all of its edges (for a recompute)."""
+    with conn:
+        conn.execute("UPDATE recipes SET pairings_json = NULL WHERE id = ?", (recipe_id,))
+        conn.execute(
+            "DELETE FROM recipe_pairings WHERE recipe_a = ? OR recipe_b = ?",
+            (recipe_id, recipe_id),
+        )
+
+
+def pairing_candidates(conn: sqlite3.Connection, exclude_id: int) -> list[dict]:
+    """Real recipes (a dish_name) other than exclude_id, with the fields the
+    pairing model needs to choose matches."""
+    rows = conn.execute(
+        "SELECT id, dish_name, meal_type FROM recipes"
+        " WHERE dish_name IS NOT NULL AND id != ? ORDER BY id",
+        (exclude_id,),
+    ).fetchall()
+    out = []
+    for row in rows:
+        tags = [
+            t["tag"]
+            for t in conn.execute(
+                "SELECT tag FROM tags WHERE recipe_id = ? ORDER BY tag", (row["id"],)
+            )
+        ]
+        out.append(
+            {"id": row["id"], "dish_name": row["dish_name"],
+             "meal_type": row["meal_type"], "tags": tags}
+        )
+    return out
+
+
+def recipe_ids_for_pairing(
+    conn: sqlite3.Connection, include_paired: bool = False
+) -> list[int]:
+    """Ids of real recipes to pair. By default only those not paired yet
+    (pairings_json IS NULL); with include_paired, all of them."""
+    sql = "SELECT id FROM recipes WHERE dish_name IS NOT NULL"
+    if not include_paired:
+        sql += " AND pairings_json IS NULL"
+    sql += " ORDER BY id"
+    return [r["id"] for r in conn.execute(sql)]
 
 
 def recipe_ids_for_classify(
@@ -489,8 +599,12 @@ def replace_recipe_content(
         conn.execute("DELETE FROM recipe_components WHERE recipe_id = ?", (recipe_id,))
         conn.execute(
             "UPDATE recipes SET macros_json = NULL, gaps_json = NULL,"
-            " meal_type = NULL, health_score = NULL WHERE id = ?",
+            " meal_type = NULL, health_score = NULL, pairings_json = NULL WHERE id = ?",
             (recipe_id,),
+        )
+        conn.execute(
+            "DELETE FROM recipe_pairings WHERE recipe_a = ? OR recipe_b = ?",
+            (recipe_id, recipe_id),
         )
 
 

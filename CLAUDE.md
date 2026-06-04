@@ -19,7 +19,7 @@ over on first run.
 ```
 mep/
   cli.py         Click commands (init, add, search, list, show, discover, classify,
-                 set-servings, export, delete, shopping-list, plan, cook, adapt)
+                 pair, set-servings, export, delete, shopping-list, plan, cook, adapt)
   config.py      ~/.mep paths, config load/validate, model id, legacy migration
   errors.py      MepError — user-fixable problems, caught in cli.main()
   llm.py         complete / complete_vision: shared model call (Anthropic/OpenAI),
@@ -39,6 +39,7 @@ mep/
   nutrition.py   Recipe -> Claude -> macro estimate (lazy, cached)
   gaps.py        Recipe -> Claude -> likely missing-step/gap flags (lazy, cached)
   classify.py    Recipe -> Claude -> meal_type + 1-10 health_score (for discover)
+  pairing.py     Recipe + collection -> Claude -> generic ideas + match ids (opt-in)
   shopping.py    Recipes -> Claude -> one combined grocery list (display-only)
 tests/           Offline unit tests (no network, no keys)
 docs/plans/      Design docs
@@ -79,6 +80,13 @@ docs/plans/      Design docs
   to redo). `db.discover` filters on these columns, so unclassified recipes are
   naturally excluded from type/health filters. Cleared on overwrite alongside
   the macro/gap caches.
+- **Pairing is opt-in.** `mep add --pair` (at ingest) or `mep pair <id>` / `--all`
+  runs one `pairing.py` call per recipe; nothing pairs automatically. It stores
+  generic ideas in `pairings_json` and inserts undirected edges into
+  `recipe_pairings` (stored once with `recipe_a < recipe_b`, both endpoints
+  cascade-delete). `pair_recipe` clears a recipe's edges + json before
+  recomputing, and `_parse`/`_normalize` drops match ids not in the candidate
+  set. `mep show` renders them automatically when present. Cleared on overwrite.
 - **FTS:** `recipe_fts` is a contentless FTS5 table keyed by `rowid = recipes.id`,
   populated inside the same transaction as the recipe insert. If you add a
   searchable field, update both the schema and `insert_recipe`. Contentless rows

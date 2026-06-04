@@ -11,7 +11,7 @@ import hashlib
 import os
 import time
 
-from . import db, web, youtube
+from . import db, pairing, web, youtube
 from .classify import classify_recipe
 from .config import require
 from .errors import MepError
@@ -64,6 +64,22 @@ def _store_recipes(
             db.save_classification(conn, recipe_id, meal_type, health)
         results.append((recipe_id, extracted.get("dish_name"), meal_type, health))
     return results
+
+
+def pair_recipe(conn, config, recipe_id) -> bool:
+    """Compute and store pairings for one stored recipe: generic ideas plus
+    edges to existing recipes it goes well with. Recomputes cleanly (clears any
+    prior pairings first). Skips empty stubs. Returns True if it ran."""
+    data = db.get_recipe(conn, recipe_id)
+    if data is None or data["recipe"]["dish_name"] is None:
+        return False
+    candidates = db.pairing_candidates(conn, exclude_id=recipe_id)
+    result = pairing.suggest_pairings(data, candidates, config=config)
+    db.clear_pairings(conn, recipe_id)
+    db.save_pairings(conn, recipe_id, result["generic"])
+    for match in result["matches"]:
+        db.add_pairing_edge(conn, recipe_id, match["id"], match["why"])
+    return True
 
 
 def ingest_one(conn, config, video_id, title, channel) -> tuple[str, list[Result]]:

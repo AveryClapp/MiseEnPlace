@@ -15,6 +15,7 @@ os.environ["MEP_HOME"] = tempfile.mkdtemp()
 
 from mep import adapt, cli, config, cook, db, ingest, scale, shopping, web  # noqa: E402
 from mep.classify import _normalize as _normalize_classification  # noqa: E402
+from mep.pairing import _normalize as _normalize_pairings  # noqa: E402
 from mep.components import _normalize_components  # noqa: E402
 from mep.gaps import _normalize as _normalize_gaps  # noqa: E402
 from mep.nutrition import _normalize as _normalize_macros  # noqa: E402
@@ -490,6 +491,106 @@ def test_save_get_components_roundtrip():
     with conn:
         conn.execute("DELETE FROM recipes WHERE id = ?", (rid,))
     assert db.get_components(conn, rid) == []
+
+
+# --- pairing graph ------------------------------------------------------------
+
+
+def test_normalize_pairings_filters_invalid_ids():
+    out = _normalize_pairings(
+        {
+            "generic": [{"name": " Garlic bread ", "why": " soaks sauce "}, {"name": ""}, "junk"],
+            "matches": [{"id": 3, "why": "bright"}, {"id": 99, "why": "nope"},
+                        {"id": "x"}, {"id": 3, "why": "dup"}],
+        },
+        valid_ids={3, 7},
+    )
+    assert out["generic"] == [{"name": "Garlic bread", "why": "soaks sauce"}]
+    # id 99 not in valid set -> dropped; non-int dropped; id 3 deduped.
+    assert out["matches"] == [{"id": 3, "why": "bright"}]
+
+
+def test_normalize_pairings_empty_raises():
+    with pytest.raises(MepError):
+        _normalize_pairings({"generic": [], "matches": []}, valid_ids=set())
+
+
+def test_pairing_edges_are_undirected_and_cascade():
+    db.init_db()
+    conn = db.connect()
+    a = _seed_recipe(conn, "pairvid001")
+    b = _seed_recipe(conn, "pairvid002")
+    c = _seed_recipe(conn, "pairvid003")
+    db.add_pairing_edge(conn, a, b, "go together")
+    db.add_pairing_edge(conn, b, a, "duplicate, ignored")  # same edge, sorted
+    db.add_pairing_edge(conn, a, c, "also good")
+    # Symmetric: querying from either endpoint finds the partner.
+    assert {e["id"] for e in db.get_pairing_edges(conn, a)} == {b, c}
+    assert [e["id"] for e in db.get_pairing_edges(conn, b)] == [a]
+    assert db.get_pairing_edges(conn, b)[0]["reason"] == "go together"
+    # Deleting a recipe drops its edges (FK cascade).
+    db.delete_recipe(conn, a)
+    assert db.get_pairing_edges(conn, b) == []
+    assert db.get_pairing_edges(conn, c) == []
+
+
+def test_clear_pairings_resets_generic_and_edges():
+    db.init_db()
+    conn = db.connect()
+    a = _seed_recipe(conn, "pairvid010")
+    b = _seed_recipe(conn, "pairvid011")
+    db.save_pairings(conn, a, [{"name": "wine", "why": "classic"}])
+    db.add_pairing_edge(conn, a, b, "x")
+    db.clear_pairings(conn, a)
+    assert db.get_pairings(conn, a) is None
+    assert db.get_pairing_edges(conn, a) == []
+
+
+def test_pairing_candidates_excludes_self_and_stubs():
+    db.init_db()
+    conn = db.connect()
+    a = _seed_recipe(conn, "pairvid020")
+    b = _seed_recipe(conn, "pairvid021")
+    stub = db.insert_recipe(
+        conn, video_id="pairstub01", title="vlog", channel="c", url="u",
+        raw_transcript=None, extracted={"dish_name": None, "ingredients": [], "steps": [], "tags": []},
+    )
+    cands = db.pairing_candidates(conn, exclude_id=a)
+    ids = {c["id"] for c in cands}
+    assert b in ids and a not in ids and stub not in ids  # no self, no stub
+
+
+def test_pair_recipe_stores_generic_and_edges(monkeypatch):
+    db.init_db()
+    conn = db.connect()
+    main = _seed_recipe(conn, "pairvid030")
+    side = _seed_recipe(conn, "pairvid031")
+    monkeypatch.setattr(
+        ingest.pairing, "suggest_pairings",
+        lambda data, cands, *, config: {
+            "generic": [{"name": "crusty bread", "why": "for the sauce"}],
+            "matches": [{"id": side, "why": "fresh contrast"}],
+        },
+    )
+    assert ingest.pair_recipe(conn, {}, main) is True
+    assert db.get_pairings(conn, main) == [{"name": "crusty bread", "why": "for the sauce"}]
+    assert {e["id"] for e in db.get_pairing_edges(conn, main)} == {side}
+    # The edge is mutual: the side now lists the main dish too.
+    assert {e["id"] for e in db.get_pairing_edges(conn, side)} == {main}
+
+
+def test_pair_recipe_skips_stub(monkeypatch):
+    db.init_db()
+    conn = db.connect()
+    stub = db.insert_recipe(
+        conn, video_id="pairstub02", title="vlog", channel="c", url="u",
+        raw_transcript=None, extracted={"dish_name": None, "ingredients": [], "steps": [], "tags": []},
+    )
+    monkeypatch.setattr(
+        ingest.pairing, "suggest_pairings",
+        lambda *a, **k: pytest.fail("should not pair a stub"),
+    )
+    assert ingest.pair_recipe(conn, {}, stub) is False
 
 
 # --- graceful fault handling --------------------------------------------------
