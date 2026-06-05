@@ -103,9 +103,12 @@ docs/plans/      Design docs
 - **Pantry + `cook-now`.** `pantry` is a NOCASE name table; `cook_now` ranks real
   recipes by missing-ingredient count (substring match via `db._have`, recipes
   with no ingredients skipped). Opt-in: nothing populates the pantry automatically.
-- **Backup is JSON, not the DB file.** `export --all` emits `_to_export` records
-  (content + rating/notes/classification/cook count, but not regenerable caches);
-  `import` re-inserts via `db.import_recipe`, skipping existing `video_id`s.
+- **Backup is JSON, not the DB file.** `export --all` emits a list of `_to_export`
+  records (content + rating/notes/classification/cook count, but not regenerable
+  caches); `export <id> --json` emits one such record (plain `export <id>` is
+  still Markdown). `import` reads either shape (a single object or a list, via
+  `_load_import_records`) and re-inserts through `db.import_recipe`, skipping
+  existing `video_id`s.
 - **`mep clarify` rewrites stored steps to name cookware** (`cookware.py`, one
   call per recipe; ids or `--all`). New recipes already get pots/pans named at
   extraction. It mutates only the `steps` rows via `db.replace_steps` (re-numbers,

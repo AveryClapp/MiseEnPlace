@@ -209,53 +209,70 @@ def set_servings(recipe_id, servings):
 @cli.command()
 @click.argument("recipe_id", type=int, required=False)
 @click.option("--all", "export_all", is_flag=True, help="Export every recipe as a JSON backup.")
+@click.option("--json", "as_json", is_flag=True, help="Export one recipe as importable JSON instead of Markdown.")
 @click.option(
     "-o", "--output", type=click.Path(dir_okay=False, writable=True), default=None,
     help="Write to a file instead of stdout.",
 )
-def export(recipe_id, export_all, output):
-    """Export one recipe as Markdown, or the whole collection as JSON (--all)."""
+def export(recipe_id, export_all, as_json, output):
+    """Export one recipe (Markdown, or importable JSON with --json), or the whole
+    collection as JSON with --all. Anything JSON can be fed back to `mep import`."""
     conn = db.connect()
     if export_all:
         records = [_to_export(db.get_recipe(conn, rid)) for rid in db.all_recipe_ids(conn)]
-        payload = json.dumps(records, indent=2)
-        if output:
-            Path(output).write_text(payload)
-            click.echo(f"Backed up {len(records)} recipe(s) to {output}.")
-        else:
-            click.echo(payload)
+        _emit(json.dumps(records, indent=2), output, f"Backed up {len(records)} recipe(s) to ")
         return
     if recipe_id is None:
         raise click.UsageError("Give a recipe id, or --all for a full backup.")
     data = db.get_recipe(conn, recipe_id)
     if data is None:
         raise MepError(f"No recipe with id {recipe_id}.")
-    md = _to_markdown(data)
-    if output:
-        Path(output).write_text(md)
-        click.echo(f"Wrote {output}.")
+    if as_json:
+        _emit(json.dumps(_to_export(data), indent=2), output, "Wrote ")
     else:
-        click.echo(md, nl=False)
+        _emit(_to_markdown(data), output, "Wrote ", trailing_newline=False)
+
+
+def _emit(payload, output, wrote_prefix, trailing_newline=True):
+    """Write a payload to a file (with a confirmation) or stdout."""
+    if output:
+        Path(output).write_text(payload)
+        click.echo(f"{wrote_prefix}{output}.")
+    else:
+        click.echo(payload, nl=trailing_newline)
 
 
 @cli.command(name="import")
 @click.argument("path", type=click.Path(exists=True, dir_okay=False))
 def import_cmd(path):
-    """Restore recipes from a `export --all` JSON backup (skips ones you have)."""
+    """Load recipes from `export` JSON (a single recipe or an `--all` backup),
+    skipping any whose source you already have."""
     conn = db.connect()
     try:
-        records = json.loads(Path(path).read_text())
-    except (json.JSONDecodeError, OSError) as exc:
-        raise MepError(f"Couldn't read backup {path}: {exc}")
-    if not isinstance(records, list):
-        raise MepError("That backup isn't a list of recipes.")
+        text = Path(path).read_text()
+    except OSError as exc:
+        raise MepError(f"Couldn't read {path}: {exc}")
     added = skipped = 0
-    for record in records:
+    for record in _load_import_records(text):
         if isinstance(record, dict) and db.import_recipe(conn, record) is not None:
             added += 1
         else:
             skipped += 1
     click.echo(f"Imported {added} recipe(s); skipped {skipped} already present.")
+
+
+def _load_import_records(text: str) -> list:
+    """Parse import JSON into a list of records, accepting either a single recipe
+    object or a list of them."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise MepError(f"That isn't valid JSON: {exc}")
+    if isinstance(data, dict):
+        return [data]
+    if isinstance(data, list):
+        return data
+    raise MepError("Expected a recipe object or a list of recipes.")
 
 
 @cli.command()

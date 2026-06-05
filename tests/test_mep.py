@@ -556,6 +556,37 @@ def test_validate_editable_rejects_non_dict():
         cli._validate_editable([1, 2, 3])
 
 
+def test_load_import_records_accepts_object_or_list():
+    assert cli._load_import_records('{"video_id": "x"}') == [{"video_id": "x"}]
+    assert cli._load_import_records('[{"video_id": "a"}, {"video_id": "b"}]') == [
+        {"video_id": "a"}, {"video_id": "b"},
+    ]
+    with pytest.raises(MepError):
+        cli._load_import_records("not json")
+    with pytest.raises(MepError):
+        cli._load_import_records('"just a string"')
+
+
+def test_single_json_export_round_trips_through_import():
+    db.init_db()
+    conn = db.connect()
+    rid = db.insert_recipe(
+        conn, video_id="single-1", title="T", channel="C", url="U", raw_transcript=None,
+        extracted={"dish_name": "Chili", "cook_time": "1 hr", "servings": "6", "difficulty": "medium",
+                   "ingredients": [{"name": "beans", "quantity": "2", "unit": "cans", "prep": None}],
+                   "steps": ["brown beef", "simmer"], "tags": ["dinner"]},
+    )
+    db.set_rating(conn, rid, 4)
+    # What `export <id> --json` writes is a single object; import accepts it.
+    payload = json.dumps(cli._to_export(db.get_recipe(conn, rid)))
+    [record] = cli._load_import_records(payload)
+    record["video_id"] = "single-1-copy"
+    new_id = db.import_recipe(conn, record)
+    full = db.get_recipe(conn, new_id)
+    assert full["recipe"]["dish_name"] == "Chili" and full["recipe"]["rating"] == 4
+    assert [s["instruction"] for s in full["steps"]] == ["brown beef", "simmer"]
+
+
 # --- plan normalization -------------------------------------------------------
 
 

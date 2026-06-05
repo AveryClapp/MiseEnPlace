@@ -91,8 +91,9 @@ mep rate 42 5                                          # rate it 1-5 (powers --f
 mep note 42 "used less salt, perfect"                 # add a dated cooking note
 mep edit 42                                            # fix a recipe by hand ($EDITOR, JSON)
 mep export 42                                         # print as Markdown (or -o file.md)
+mep export 42 --json -o chili.json                    # one recipe as importable JSON
 mep export --all -o backup.json                       # back up the whole collection
-mep import backup.json                                # restore (skips ones you have)
+mep import backup.json                                # restore (one recipe or a whole backup)
 mep delete 42                                          # remove a recipe (asks first; -f to skip)
 mep shopping-list 42 7 13                              # one combined grocery list
 
@@ -210,7 +211,9 @@ everything!" first), showing the shopping gap for each.
 For backup or moving machines, `mep export --all -o backup.json` writes every
 recipe (with its rating, notes, and classification) to one JSON file, and
 `mep import backup.json` restores them, skipping any whose source you already
-have.
+have. `mep export <id> --json` does the same for a single recipe, and `import`
+accepts either a single recipe object or a full backup, so you can hand one
+recipe to a friend and they can `mep import` it.
 
 To support that, every recipe is given a meal type and a 1-10 health score (10 =
 lean and vegetable-forward, 1 = rich and indulgent) by a small model call at
