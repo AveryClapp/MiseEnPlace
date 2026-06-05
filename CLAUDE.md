@@ -19,13 +19,15 @@ over on first run.
 ```
 mep/
   cli.py         Click commands (init, add, search, list, show, discover, classify,
-                 clarify, pair, set-servings, export, delete, shopping-list, plan,
+                 clarify, pair, set-servings, set-time, rate, note, edit, history,
+                 pantry, cook-now, export, import, delete, shopping-list, plan,
                  cook, adapt)
   config.py      ~/.mep paths, config load/validate, model id, legacy migration
   errors.py      MepError — user-fixable problems, caught in cli.main()
   llm.py         complete / complete_vision: shared model call (Anthropic/OpenAI),
                  retry + truncation guard; vision sends base64 image blocks
-  db.py          Schema, inserts, FTS5 search, plan/component storage, read queries
+  db.py          Schema, inserts, FTS5 search, plan/component storage, read
+                 queries, ratings/notes, pantry + cook_log, export/import
   transcript.py  URL -> video_id, transcript fetch (None if unavailable)
   web.py         Recipe web page -> schema.org JSON-LD (or readable text fallback)
   extract.py     Text or image(s) -> Claude -> parsed recipe list (one or more)
@@ -88,6 +90,22 @@ docs/plans/      Design docs
   freeform TEXT, so `scale.parse_minutes` parses it (ranges take the upper bound)
   and the filter runs in Python, not SQL; recipes with no parseable cook time are
   excluded.
+- **Personal data lives in columns/tables, not the LLM.** `rating` (1-5) and
+  `notes` (dated lines appended by `mep note`) are recipe columns shown in `show`
+  and exported; `discover --favorites` is `--min-rating 4`. Every `cook` logs a
+  row in `cook_log` (via `increment_cook_count`), powering `mep history` and
+  `db.last_cooked`. `set-time` mirrors `set-servings`. None of these touch the
+  derived caches.
+- **`mep edit` is a deterministic hand-fix.** It opens the content-only fields as
+  JSON in `$EDITOR` (`click.edit`), validates with `_validate_editable`, and
+  writes through `replace_recipe_content` (so it clears the content-derived caches
+  like classification/plan/pairings — re-run those after). No model call.
+- **Pantry + `cook-now`.** `pantry` is a NOCASE name table; `cook_now` ranks real
+  recipes by missing-ingredient count (substring match via `db._have`, recipes
+  with no ingredients skipped). Opt-in: nothing populates the pantry automatically.
+- **Backup is JSON, not the DB file.** `export --all` emits `_to_export` records
+  (content + rating/notes/classification/cook count, but not regenerable caches);
+  `import` re-inserts via `db.import_recipe`, skipping existing `video_id`s.
 - **`mep clarify` rewrites stored steps to name cookware** (`cookware.py`, one
   call per recipe; ids or `--all`). New recipes already get pots/pans named at
   extraction. It mutates only the `steps` rows via `db.replace_steps` (re-numbers,

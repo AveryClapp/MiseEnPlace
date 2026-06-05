@@ -207,14 +207,26 @@ def set_servings(recipe_id, servings):
 
 
 @cli.command()
-@click.argument("recipe_id", type=int)
+@click.argument("recipe_id", type=int, required=False)
+@click.option("--all", "export_all", is_flag=True, help="Export every recipe as a JSON backup.")
 @click.option(
     "-o", "--output", type=click.Path(dir_okay=False, writable=True), default=None,
     help="Write to a file instead of stdout.",
 )
-def export(recipe_id, output):
-    """Export a recipe as Markdown (to stdout, or a file with -o)."""
+def export(recipe_id, export_all, output):
+    """Export one recipe as Markdown, or the whole collection as JSON (--all)."""
     conn = db.connect()
+    if export_all:
+        records = [_to_export(db.get_recipe(conn, rid)) for rid in db.all_recipe_ids(conn)]
+        payload = json.dumps(records, indent=2)
+        if output:
+            Path(output).write_text(payload)
+            click.echo(f"Backed up {len(records)} recipe(s) to {output}.")
+        else:
+            click.echo(payload)
+        return
+    if recipe_id is None:
+        raise click.UsageError("Give a recipe id, or --all for a full backup.")
     data = db.get_recipe(conn, recipe_id)
     if data is None:
         raise MepError(f"No recipe with id {recipe_id}.")
@@ -224,6 +236,26 @@ def export(recipe_id, output):
         click.echo(f"Wrote {output}.")
     else:
         click.echo(md, nl=False)
+
+
+@cli.command(name="import")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False))
+def import_cmd(path):
+    """Restore recipes from a `export --all` JSON backup (skips ones you have)."""
+    conn = db.connect()
+    try:
+        records = json.loads(Path(path).read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        raise MepError(f"Couldn't read backup {path}: {exc}")
+    if not isinstance(records, list):
+        raise MepError("That backup isn't a list of recipes.")
+    added = skipped = 0
+    for record in records:
+        if isinstance(record, dict) and db.import_recipe(conn, record) is not None:
+            added += 1
+        else:
+            skipped += 1
+    click.echo(f"Imported {added} recipe(s); skipped {skipped} already present.")
 
 
 @cli.command()
@@ -240,6 +272,135 @@ def delete(recipe_id, force):
         click.confirm(f"Delete recipe {recipe_id} ({name})?", abort=True)
     db.delete_recipe(conn, recipe_id)
     click.echo(f"Deleted recipe {recipe_id} ({name}).")
+
+
+@cli.command()
+@click.argument("recipe_id", type=int)
+@click.argument("stars", type=click.IntRange(1, 5))
+def rate(recipe_id, stars):
+    """Rate a recipe 1-5 (used by `discover --favorites`)."""
+    conn = db.connect()
+    if db.get_recipe(conn, recipe_id) is None:
+        raise MepError(f"No recipe with id {recipe_id}.")
+    db.set_rating(conn, recipe_id, stars)
+    click.echo(f"Rated recipe {recipe_id} {'★' * stars}{'☆' * (5 - stars)}.")
+
+
+@cli.command()
+@click.argument("recipe_id", type=int)
+@click.argument("text")
+def note(recipe_id, text):
+    """Add a dated note to a recipe (how it went, tweaks to try)."""
+    conn = db.connect()
+    if db.get_recipe(conn, recipe_id) is None:
+        raise MepError(f"No recipe with id {recipe_id}.")
+    db.add_note(conn, recipe_id, text)
+    click.echo(f"Noted on recipe {recipe_id}.")
+
+
+@cli.command(name="set-time")
+@click.argument("recipe_id", type=int)
+@click.argument("cook_time")
+def set_time(recipe_id, cook_time):
+    """Record or correct how long a recipe takes (stored verbatim; for --max-time)."""
+    conn = db.connect()
+    if db.get_recipe(conn, recipe_id) is None:
+        raise MepError(f"No recipe with id {recipe_id}.")
+    db.set_cook_time(conn, recipe_id, cook_time)
+    click.echo(f"Recipe {recipe_id} now takes {cook_time}.")
+
+
+@cli.command()
+@click.argument("recipe_id", type=int)
+def edit(recipe_id):
+    """Fix a recipe by hand: opens its data as JSON in your $EDITOR."""
+    conn = db.connect()
+    data = db.get_recipe(conn, recipe_id)
+    if data is None:
+        raise MepError(f"No recipe with id {recipe_id}.")
+    before = json.dumps(_to_editable(data), indent=2)
+    edited = click.edit(before, extension=".json")
+    if edited is None or edited.strip() == before.strip():
+        click.echo("No changes.")
+        return
+    try:
+        new = json.loads(edited)
+    except json.JSONDecodeError as exc:
+        raise MepError(f"That isn't valid JSON: {exc}")
+    db.replace_recipe_content(conn, recipe_id, _validate_editable(new))
+    click.echo(f"Updated recipe {recipe_id}. (Re-run classify/pair if you want them refreshed.)")
+
+
+@cli.command()
+@click.option("-n", "--limit", type=int, default=20, help="How many recent cooks to show.")
+def history(limit):
+    """Show what you've cooked recently."""
+    conn = db.connect()
+    rows = db.cook_history(conn, limit=max(1, limit))
+    if not rows:
+        click.echo("No cooks logged yet. Cook something with `mep cook <id>`.")
+        return
+    for row in rows:
+        when = (row["cooked_at"] or "")[:16]
+        click.echo(f"  {when}   {row['dish_name'] or '(untitled)'}  (#{row['recipe_id']})")
+
+
+@cli.command(name="cook-now")
+@click.option("-n", "--limit", type=int, default=10, help="How many recipes to show.")
+def cook_now_cmd(limit):
+    """Rank recipes by how little you'd need to buy, given your pantry."""
+    conn = db.connect()
+    if not db.pantry_list(conn):
+        raise MepError("Your pantry is empty. Add items with `mep pantry add eggs milk ...`.")
+    rows = db.cook_now(conn, limit=max(1, limit))
+    if not rows:
+        click.echo("No recipes with ingredients yet.")
+        return
+    click.echo()
+    for r in rows:
+        if not r["missing"]:
+            tag = click.style("have everything!", fg="green")
+        else:
+            tag = "need " + ", ".join(r["missing"][:6])
+            if len(r["missing"]) > 6:
+                tag += f", +{len(r['missing']) - 6} more"
+        click.echo(f"  {r['id']:>4}  {r['dish_name']:<28}  {tag}")
+    click.echo()
+
+
+@cli.group()
+def pantry():
+    """Manage the ingredients you keep on hand (for `cook-now`)."""
+
+
+@pantry.command("add")
+@click.argument("items", nargs=-1, required=True)
+def pantry_add_cmd(items):
+    """Add ingredients to your pantry."""
+    conn = db.connect()
+    added = db.pantry_add(conn, list(items))
+    click.echo(f"Added {added} item(s). Pantry now has {len(db.pantry_list(conn))}.")
+
+
+@pantry.command("remove")
+@click.argument("items", nargs=-1, required=True)
+def pantry_remove_cmd(items):
+    """Remove ingredients from your pantry."""
+    conn = db.connect()
+    removed = db.pantry_remove(conn, list(items))
+    click.echo(f"Removed {removed} item(s).")
+
+
+@pantry.command("list")
+def pantry_list_cmd():
+    """Show everything in your pantry."""
+    conn = db.connect()
+    items = db.pantry_list(conn)
+    if not items:
+        click.echo("Pantry is empty. Add items with `mep pantry add eggs milk ...`.")
+        return
+    for item in items:
+        click.echo(f"  - {item}")
 
 
 @cli.command(name="shopping-list")
@@ -277,15 +438,18 @@ def shopping_list(recipe_ids):
     "--max-time", type=int, default=None,
     help="Only recipes that cook in this many minutes or less.",
 )
+@click.option("--min-rating", type=click.IntRange(1, 5), default=None, help="Only recipes rated at least this.")
+@click.option("--favorites", is_flag=True, help="Only your favorites (rated 4+).")
 @click.option("-n", "--count", type=int, default=1, help="How many to pick (default 1).")
-def discover(meal_type, healthy, indulgent, min_health, max_health, ingredients, max_time, count):
-    """Pick a random recipe, optionally by type, health, ingredients, or time."""
+def discover(meal_type, healthy, indulgent, min_health, max_health, ingredients, max_time, min_rating, favorites, count):
+    """Pick a random recipe by type, health, ingredients, time, or rating."""
     conn = db.connect()
     lo, hi = _health_range(healthy, indulgent, min_health, max_health)
     wants = [i.strip() for i in ingredients if i.strip()]
+    rating = min_rating if min_rating is not None else (4 if favorites else None)
     rows = db.discover(
         conn, meal_type=meal_type, min_health=lo, max_health=hi,
-        ingredients=wants, max_time=max_time, count=max(1, count),
+        ingredients=wants, max_time=max_time, min_rating=rating, count=max(1, count),
     )
     if not rows:
         click.echo("No matching recipes.")
@@ -410,7 +574,7 @@ def show(recipe_id, servings, parts, macros, check):
     if check:
         _render_gaps(data["recipe"], _ensure_gaps(conn, config, data))
         return
-    _render(data, servings, _gather_pairings(conn, recipe_id))
+    _render(data, servings, _gather_pairings(conn, recipe_id), db.last_cooked(conn, recipe_id))
 
 
 @cli.command()
@@ -939,6 +1103,8 @@ def _to_markdown(data: dict) -> str:
     meta = []
     if r["channel"]:
         meta.append(r["channel"])
+    if r["rating"]:
+        meta.append("★" * r["rating"] + "☆" * (5 - r["rating"]))
     for field in ("cook_time", "servings", "difficulty"):
         if r[field]:
             meta.append(f"{field.replace('_', ' ')}: {r[field]}")
@@ -959,8 +1125,78 @@ def _to_markdown(data: dict) -> str:
         lines += ["## Steps", ""]
         lines += [f"{s['step_number']}. {s['instruction']}" for s in data["steps"]]
         lines.append("")
+    if r["notes"]:
+        lines += ["## Notes", ""]
+        lines += [r["notes"], ""]
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _to_export(data: dict) -> dict:
+    """A recipe as a self-contained JSON record: extracted content plus the saved
+    metadata (rating, notes, classification, cook count). Round-trips through
+    db.import_recipe. Caches (macros/gaps/plan/pairings) are intentionally left
+    out — they regenerate on demand."""
+    r = data["recipe"]
+    return {
+        "video_id": r["video_id"], "title": r["title"], "channel": r["channel"],
+        "url": r["url"], "source_type": r["source_type"],
+        "dish_name": r["dish_name"], "cook_time": r["cook_time"],
+        "servings": r["servings"], "difficulty": r["difficulty"],
+        "ingredients": data["ingredients"],
+        "steps": [s["instruction"] for s in data["steps"]],
+        "tags": data["tags"],
+        "rating": r["rating"], "notes": r["notes"],
+        "meal_type": r["meal_type"], "health_score": r["health_score"],
+        "times_cooked": r["times_cooked"],
+    }
+
+
+def _to_editable(data: dict) -> dict:
+    """The hand-editable subset of a recipe (content only) for `mep edit`."""
+    r = data["recipe"]
+    return {
+        "dish_name": r["dish_name"], "cook_time": r["cook_time"],
+        "servings": r["servings"], "difficulty": r["difficulty"],
+        "ingredients": [
+            {"name": i["name"], "quantity": i["quantity"], "unit": i["unit"], "prep": i["prep"]}
+            for i in data["ingredients"]
+        ],
+        "steps": [s["instruction"] for s in data["steps"]],
+        "tags": data["tags"],
+    }
+
+
+def _validate_editable(new: dict) -> dict:
+    """Coerce edited JSON back into the extracted shape replace_recipe_content
+    expects, dropping ingredients without a name and blank steps/tags."""
+    if not isinstance(new, dict):
+        raise MepError("Expected a JSON object with the recipe's fields.")
+    ingredients = []
+    for item in new.get("ingredients") or []:
+        if isinstance(item, dict) and _opt_str(item.get("name")):
+            ingredients.append({
+                "name": _opt_str(item.get("name")),
+                "quantity": _opt_str(item.get("quantity")),
+                "unit": _opt_str(item.get("unit")),
+                "prep": _opt_str(item.get("prep")),
+            })
+    return {
+        "dish_name": _opt_str(new.get("dish_name")),
+        "cook_time": _opt_str(new.get("cook_time")),
+        "servings": _opt_str(new.get("servings")),
+        "difficulty": _opt_str(new.get("difficulty")),
+        "ingredients": ingredients,
+        "steps": [str(s).strip() for s in (new.get("steps") or []) if str(s).strip()],
+        "tags": [str(t).strip() for t in (new.get("tags") or []) if str(t).strip()],
+    }
+
+
+def _opt_str(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _render_shopping(recipes: list[dict], sections: list[dict]) -> None:
@@ -992,7 +1228,7 @@ def _gather_pairings(conn, recipe_id):
     return {"generic": generic or [], "edges": edges}
 
 
-def _render(data: dict, target_servings=None, pairings=None) -> None:
+def _render(data: dict, target_servings=None, pairings=None, last_cooked=None) -> None:
     r = data["recipe"]
     title = r["dish_name"] or r["title"] or "(untitled)"
     click.echo()
@@ -1004,6 +1240,8 @@ def _render(data: dict, target_servings=None, pairings=None) -> None:
     source_label = {"web": "web", "text": "pasted", "image": "photo"}.get(r["source_type"])
     if source_label:
         meta.append(source_label)
+    if r["rating"]:
+        meta.append("★" * r["rating"] + "☆" * (5 - r["rating"]))
     if r["meal_type"]:
         meta.append(r["meal_type"])
     if r["health_score"] is not None:
@@ -1012,7 +1250,10 @@ def _render(data: dict, target_servings=None, pairings=None) -> None:
         if r[field]:
             meta.append(f"{field.replace('_', ' ')}: {r[field]}")
     if r["times_cooked"]:
-        meta.append(f"cooked {r['times_cooked']}x")
+        cooked = f"cooked {r['times_cooked']}x"
+        if last_cooked:
+            cooked += f", last {last_cooked[:10]}"
+        meta.append(cooked)
     if meta:
         click.echo("  " + "  |  ".join(meta))
     if r["url"]:
@@ -1050,6 +1291,12 @@ def _render(data: dict, target_servings=None, pairings=None) -> None:
                 why = f" ({edge['reason']})" if edge.get("reason") else ""
                 name = edge["dish_name"] or f"recipe {edge['id']}"
                 click.echo(f"  {edge['id']:>4}  {name}{why}")
+
+    if r["notes"]:
+        click.echo()
+        click.secho("Notes", underline=True)
+        for line in r["notes"].splitlines():
+            click.echo(f"  {line}")
 
     if not data["ingredients"] and not data["steps"]:
         click.echo()

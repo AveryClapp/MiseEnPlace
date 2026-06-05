@@ -421,6 +421,141 @@ def test_list_max_time_keeps_quick_excludes_slow_and_unknown():
     assert slow not in ids and unknown not in ids
 
 
+# --- ratings, notes, cook log, pantry, edit, backup ---------------------------
+
+
+def test_set_rating_and_set_cook_time():
+    db.init_db()
+    conn = db.connect()
+    rid = _seed_recipe(conn, "rate-time-01")
+    db.set_rating(conn, rid, 4)
+    db.set_cook_time(conn, rid, "25 minutes")
+    r = db.get_recipe(conn, rid)["recipe"]
+    assert r["rating"] == 4 and r["cook_time"] == "25 minutes"
+
+
+def test_add_note_appends_dated_lines():
+    db.init_db()
+    conn = db.connect()
+    rid = _seed_recipe(conn, "note-01")
+    db.add_note(conn, rid, "too salty")
+    db.add_note(conn, rid, "perfect now")
+    notes = db.get_recipe(conn, rid)["recipe"]["notes"]
+    assert "too salty" in notes and "perfect now" in notes
+    assert notes.count("\n") == 1  # two dated lines
+    import datetime
+    assert datetime.date.today().isoformat() in notes
+
+
+def test_discover_min_rating_excludes_low_and_unrated():
+    db.init_db()
+    conn = db.connect()
+    hi = _seed_classified(conn, "rate-hi", "dinner", 6, ["x"])
+    lo = _seed_classified(conn, "rate-lo", "dinner", 6, ["x"])
+    unrated = _seed_classified(conn, "rate-none", "dinner", 6, ["x"])
+    db.set_rating(conn, hi, 5)
+    db.set_rating(conn, lo, 2)
+    ids = {r["id"] for r in db.discover(conn, min_rating=4, count=50)}
+    assert hi in ids
+    assert lo not in ids and unrated not in ids
+
+
+def test_increment_cook_count_logs_history_and_last_cooked():
+    db.init_db()
+    conn = db.connect()
+    rid = _seed_recipe(conn, "cooklog-01")
+    assert db.last_cooked(conn, rid) is None
+    db.increment_cook_count(conn, rid)
+    db.increment_cook_count(conn, rid)
+    assert db.last_cooked(conn, rid) is not None
+    mine = [h for h in db.cook_history(conn, limit=50) if h["recipe_id"] == rid]
+    assert len(mine) == 2 and mine[0]["dish_name"] == "d"
+
+
+def test_pantry_add_remove_list():
+    db.init_db()
+    conn = db.connect()
+    assert db.pantry_add(conn, ["eggs", "milk", "eggs"]) == 2  # dupe ignored
+    assert set(db.pantry_list(conn)) >= {"eggs", "milk"}
+    assert db.pantry_remove(conn, ["eggs"]) == 1
+    assert "eggs" not in db.pantry_list(conn)
+
+
+def test_cook_now_ranks_by_fewest_missing():
+    db.init_db()
+    conn = db.connect()
+    toast = db.insert_recipe(
+        conn, video_id="cn-toast", title="t", channel=None, url=None, raw_transcript=None,
+        extracted={"dish_name": "Egg Toast",
+                   "ingredients": [{"name": "eggs"}, {"name": "bread"}], "steps": ["go"], "tags": []},
+    )
+    cake = db.insert_recipe(
+        conn, video_id="cn-cake", title="t", channel=None, url=None, raw_transcript=None,
+        extracted={"dish_name": "Fancy Cake",
+                   "ingredients": [{"name": "flour"}, {"name": "saffron"}, {"name": "truffle"}],
+                   "steps": ["go"], "tags": []},
+    )
+    db.pantry_add(conn, ["eggs", "bread", "flour"])
+    ranked = db.cook_now(conn)
+    ids = [r["id"] for r in ranked]
+    assert ids.index(toast) < ids.index(cake)  # 0 missing before 2 missing
+    assert next(r for r in ranked if r["id"] == toast)["missing"] == []
+    assert set(next(r for r in ranked if r["id"] == cake)["missing"]) == {"saffron", "truffle"}
+
+
+def test_export_import_roundtrip_preserves_metadata():
+    db.init_db()
+    conn = db.connect()
+    rid = db.insert_recipe(
+        conn, video_id="exp-1", title="T", channel="C", url="U", raw_transcript=None,
+        extracted={"dish_name": "Soup", "cook_time": "30 min", "servings": "4", "difficulty": "easy",
+                   "ingredients": [{"name": "broth", "quantity": "4", "unit": "cups", "prep": None}],
+                   "steps": ["boil", "serve"], "tags": ["soup"]},
+        source_type="web",
+    )
+    db.set_rating(conn, rid, 5)
+    db.add_note(conn, rid, "great")
+    db.save_classification(conn, rid, "dinner", 7)
+    db.increment_cook_count(conn, rid)
+
+    record = cli._to_export(db.get_recipe(conn, rid))
+    record["video_id"] = "exp-1-copy"  # import as a new recipe
+    new_id = db.import_recipe(conn, record)
+    full = db.get_recipe(conn, new_id)
+    r = full["recipe"]
+    assert r["dish_name"] == "Soup" and r["rating"] == 5 and "great" in r["notes"]
+    assert r["meal_type"] == "dinner" and r["health_score"] == 7
+    assert r["times_cooked"] == 1 and r["source_type"] == "web"
+    assert [i["name"] for i in full["ingredients"]] == ["broth"]
+    assert [s["instruction"] for s in full["steps"]] == ["boil", "serve"]
+    assert full["tags"] == ["soup"]
+    # Re-importing the same record is a skip.
+    assert db.import_recipe(conn, record) is None
+
+
+def test_validate_editable_coerces_and_drops():
+    out = cli._validate_editable({
+        "dish_name": " Soup ", "cook_time": "", "servings": None, "difficulty": "easy",
+        "ingredients": [
+            {"name": " broth ", "quantity": "4", "unit": "cups"},
+            {"name": ""},        # dropped: no name
+            {"quantity": "1"},   # dropped: no name
+        ],
+        "steps": ["boil", "", 2],
+        "tags": [" soup ", ""],
+    })
+    assert out["dish_name"] == "Soup"
+    assert out["cook_time"] is None  # blank -> None
+    assert out["ingredients"] == [{"name": "broth", "quantity": "4", "unit": "cups", "prep": None}]
+    assert out["steps"] == ["boil", "2"]
+    assert out["tags"] == ["soup"]
+
+
+def test_validate_editable_rejects_non_dict():
+    with pytest.raises(MepError):
+        cli._validate_editable([1, 2, 3])
+
+
 # --- plan normalization -------------------------------------------------------
 
 
@@ -1348,6 +1483,8 @@ def test_to_markdown_renders_card():
             "servings": "2",
             "difficulty": "easy",
             "times_cooked": 3,
+            "rating": None,
+            "notes": None,
         },
         "ingredients": [
             {"name": "spaghetti", "quantity": "200", "unit": "g", "prep": None},
@@ -1374,6 +1511,7 @@ def test_to_markdown_untitled_no_recipe():
         "recipe": {
             "dish_name": None, "title": None, "channel": None, "url": None,
             "cook_time": None, "servings": None, "difficulty": None, "times_cooked": 0,
+            "rating": None, "notes": None,
         },
         "ingredients": [],
         "steps": [],

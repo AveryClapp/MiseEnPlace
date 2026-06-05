@@ -4,6 +4,7 @@ No ORM. Connections set row_factory to sqlite3.Row so callers get dict-like
 rows, and enable foreign keys so deleting a recipe cascades to its children.
 """
 
+import datetime
 import json
 import sqlite3
 
@@ -24,6 +25,8 @@ _RECIPE_COLUMNS = {
     "health_score": "INTEGER",
     "source_type": "TEXT",
     "pairings_json": "TEXT",
+    "rating": "INTEGER",
+    "notes": "TEXT",
 }
 
 SCHEMA = """
@@ -45,7 +48,9 @@ CREATE TABLE IF NOT EXISTS recipes (
     meal_type      TEXT,
     health_score   INTEGER,
     source_type    TEXT,
-    pairings_json  TEXT
+    pairings_json  TEXT,
+    rating         INTEGER,
+    notes          TEXT
 );
 
 CREATE TABLE IF NOT EXISTS ingredients (
@@ -102,6 +107,18 @@ CREATE TABLE IF NOT EXISTS recipe_pairings (
     recipe_b INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
     reason   TEXT,
     PRIMARY KEY (recipe_a, recipe_b)
+);
+
+-- Ingredients you keep on hand, for `cook-now`. Names only, case-insensitive.
+CREATE TABLE IF NOT EXISTS pantry (
+    name TEXT PRIMARY KEY COLLATE NOCASE
+);
+
+-- One row per cook session (for `history` and a recipe's "last cooked").
+CREATE TABLE IF NOT EXISTS cook_log (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+    cooked_at TEXT DEFAULT (datetime('now'))
 );
 
 -- Contentless FTS index keyed by rowid = recipes.id.
@@ -351,16 +368,166 @@ def replace_steps(conn: sqlite3.Connection, recipe_id: int, steps: list[str]) ->
 
 
 def increment_cook_count(conn: sqlite3.Connection, recipe_id: int) -> int:
-    """Bump a recipe's cooked counter by one and return the new total."""
+    """Bump a recipe's cooked counter and log a timestamped cook. Returns the
+    new total."""
     with conn:
         conn.execute(
             "UPDATE recipes SET times_cooked = times_cooked + 1 WHERE id = ?",
             (recipe_id,),
         )
+        conn.execute("INSERT INTO cook_log (recipe_id) VALUES (?)", (recipe_id,))
     row = conn.execute(
         "SELECT times_cooked FROM recipes WHERE id = ?", (recipe_id,)
     ).fetchone()
     return row["times_cooked"] if row else 0
+
+
+def set_rating(conn: sqlite3.Connection, recipe_id: int, rating: int) -> None:
+    """Set a recipe's 1-5 rating."""
+    with conn:
+        conn.execute("UPDATE recipes SET rating = ? WHERE id = ?", (rating, recipe_id))
+
+
+def set_cook_time(conn: sqlite3.Connection, recipe_id: int, cook_time: str) -> None:
+    """Record a recipe's cook time, stored verbatim like any other field."""
+    with conn:
+        conn.execute(
+            "UPDATE recipes SET cook_time = ? WHERE id = ?", (cook_time, recipe_id)
+        )
+
+
+def add_note(conn: sqlite3.Connection, recipe_id: int, note: str) -> None:
+    """Append a dated note to a recipe's running notes."""
+    line = f"[{datetime.date.today().isoformat()}] {note.strip()}"
+    with conn:
+        row = conn.execute(
+            "SELECT notes FROM recipes WHERE id = ?", (recipe_id,)
+        ).fetchone()
+        existing = row["notes"] if row and row["notes"] else None
+        combined = f"{existing}\n{line}" if existing else line
+        conn.execute("UPDATE recipes SET notes = ? WHERE id = ?", (combined, recipe_id))
+
+
+def last_cooked(conn: sqlite3.Connection, recipe_id: int) -> str | None:
+    """The timestamp of the most recent cook, or None if never cooked."""
+    row = conn.execute(
+        "SELECT MAX(cooked_at) AS t FROM cook_log WHERE recipe_id = ?", (recipe_id,)
+    ).fetchone()
+    return row["t"] if row else None
+
+
+def cook_history(conn: sqlite3.Connection, limit: int = 20) -> list[sqlite3.Row]:
+    """Recent cooks, newest first, with the recipe's display name."""
+    return conn.execute(
+        "SELECT c.cooked_at, c.recipe_id, COALESCE(r.dish_name, r.title) AS dish_name"
+        " FROM cook_log c JOIN recipes r ON r.id = c.recipe_id"
+        " ORDER BY c.cooked_at DESC, c.id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+
+
+def pantry_add(conn: sqlite3.Connection, names: list[str]) -> int:
+    """Add ingredient names to the pantry (ignoring duplicates). Returns how many
+    were newly added."""
+    added = 0
+    with conn:
+        for name in names:
+            name = name.strip()
+            if not name:
+                continue
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO pantry (name) VALUES (?)", (name,)
+            )
+            added += cur.rowcount
+    return added
+
+
+def pantry_remove(conn: sqlite3.Connection, names: list[str]) -> int:
+    """Remove ingredient names from the pantry. Returns how many were removed."""
+    removed = 0
+    with conn:
+        for name in names:
+            cur = conn.execute("DELETE FROM pantry WHERE name = ?", (name.strip(),))
+            removed += cur.rowcount
+    return removed
+
+
+def pantry_list(conn: sqlite3.Connection) -> list[str]:
+    """Every pantry item, alphabetical."""
+    return [r["name"] for r in conn.execute("SELECT name FROM pantry ORDER BY name")]
+
+
+def cook_now(conn: sqlite3.Connection, limit: int | None = None) -> list[dict]:
+    """Rank real recipes by how few ingredients you're missing from the pantry.
+    Each result is {id, dish_name, missing, total}, fewest-missing first."""
+    have = [p.lower() for p in pantry_list(conn)]
+    results = []
+    rows = conn.execute(
+        "SELECT id, dish_name, title FROM recipes WHERE dish_name IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        names = [
+            r["name"] for r in conn.execute(
+                "SELECT name FROM ingredients WHERE recipe_id = ? AND name IS NOT NULL",
+                (row["id"],),
+            )
+        ]
+        if not names:
+            continue
+        missing = [n for n in names if not _have(n, have)]
+        results.append({
+            "id": row["id"],
+            "dish_name": row["dish_name"] or row["title"],
+            "missing": missing,
+            "total": len(names),
+        })
+    results.sort(key=lambda r: (len(r["missing"]), r["id"]))
+    return results[:limit] if limit else results
+
+
+def _have(ingredient: str, pantry: list[str]) -> bool:
+    """A pantry item covers an ingredient if either name contains the other
+    (so 'egg' covers '2 eggs' and 'canned tomatoes' is covered by 'tomato')."""
+    low = ingredient.lower()
+    return any(item in low or low in item for item in pantry)
+
+
+def all_recipe_ids(conn: sqlite3.Connection) -> list[int]:
+    """Every recipe id, oldest first (for export)."""
+    return [r["id"] for r in conn.execute("SELECT id FROM recipes ORDER BY id")]
+
+
+def import_recipe(conn: sqlite3.Connection, record: dict) -> int | None:
+    """Insert a recipe from an export record (which carries both the extracted
+    content and saved metadata). Skips and returns None if the video_id already
+    exists; otherwise returns the new id."""
+    video_id = record.get("video_id")
+    if not video_id or video_exists(conn, video_id):
+        return None
+    recipe_id = insert_recipe(
+        conn,
+        video_id=video_id,
+        title=record.get("title"),
+        channel=record.get("channel"),
+        url=record.get("url"),
+        raw_transcript=None,
+        extracted=record,
+        source_type=record.get("source_type") or "youtube",
+    )
+    with conn:
+        conn.execute(
+            "UPDATE recipes SET rating = ?, notes = ?, meal_type = ?,"
+            " health_score = ?, times_cooked = ? WHERE id = ?",
+            (
+                record.get("rating"),
+                record.get("notes"),
+                record.get("meal_type"),
+                record.get("health_score"),
+                record.get("times_cooked") or 0,
+                recipe_id,
+            ),
+        )
+    return recipe_id
 
 
 def insert_recipe(
@@ -666,18 +833,23 @@ def discover(
     max_health: int | None = None,
     ingredients: list[str] | tuple[str, ...] = (),
     max_time: int | None = None,
+    min_rating: int | None = None,
     count: int = 1,
 ) -> list[sqlite3.Row]:
     """Randomly pick up to `count` real recipes matching the given filters. A
     recipe must include every listed ingredient (substring match). With
     `max_time` (minutes), only recipes whose cook_time parses to that or less
-    qualify (ones without a parseable time are excluded). Recipes not yet
-    classified are naturally excluded by the meal_type/health filters."""
+    qualify (ones without a parseable time are excluded). `min_rating` keeps only
+    recipes rated that or higher (unrated excluded). Recipes not yet classified
+    are naturally excluded by the meal_type/health filters."""
     where = ["dish_name IS NOT NULL"]
     params: list = []
     if meal_type:
         where.append("meal_type = ?")
         params.append(meal_type)
+    if min_rating is not None:
+        where.append("rating >= ?")
+        params.append(min_rating)
     if min_health is not None:
         where.append("health_score >= ?")
         params.append(min_health)

@@ -86,9 +86,19 @@ mep show 42 --servings 8                              # scale ingredient amounts
 mep show 42 --macros                                 # estimated nutrition breakdown
 mep show 42 --check                                  # flag likely missing steps/gaps
 mep set-servings 42 4                                 # record how many it makes
+mep set-time 42 "30 minutes"                          # record how long it takes
+mep rate 42 5                                          # rate it 1-5 (powers --favorites)
+mep note 42 "used less salt, perfect"                 # add a dated cooking note
+mep edit 42                                            # fix a recipe by hand ($EDITOR, JSON)
 mep export 42                                         # print as Markdown (or -o file.md)
+mep export --all -o backup.json                       # back up the whole collection
+mep import backup.json                                # restore (skips ones you have)
 mep delete 42                                          # remove a recipe (asks first; -f to skip)
 mep shopping-list 42 7 13                              # one combined grocery list
+
+mep pantry add eggs milk flour                        # track what you have on hand
+mep cook-now                                           # recipes ranked by fewest missing items
+mep history                                            # what you've cooked recently
 
 mep plan 42                                          # AI cooking timeline (experimental)
 mep plan 42 --servings 8                             # ...scaled to 8 servings
@@ -175,14 +185,32 @@ and they show up automatically under "Serve with" and "Pairs with" in `mep show`
 `--type` (breakfast, lunch, dinner, snack, sweets), `--healthy` (health score
 >= 7) or `--indulgent` (<= 4), or `--min-health`/`--max-health` for an exact
 range, `-i/--ingredient` (repeatable) to require ingredients you want to use,
-and `--max-time N` for recipes that cook in N minutes or less. `-n/--count`
-returns more than one; with no filters it is completely random. A single pick
-prints the full recipe; several print as a list.
+`--max-time N` for recipes that cook in N minutes or less, and `--favorites` (or
+`--min-rating N`) to stick to recipes you've rated highly. `-n/--count` returns
+more than one; with no filters it is completely random. A single pick prints the
+full recipe; several print as a list.
 
 `--max-time` also works on `mep list` (e.g. `mep list --max-time 30`). It reads
 each recipe's stored cook time (parsing freeform text like "1 hr 30 min" or
 "25-35 minutes", where a range uses the upper bound), so recipes with no recorded
-cook time are excluded from the results.
+cook time are excluded from the results. Use `mep set-time <id> "<time>"` to fill
+one in (the extractor never guesses cook time).
+
+Make a recipe yours over time: `mep rate <id> 1-5` records a rating and
+`mep note <id> "..."` appends a dated note (both show in `mep show`). Every
+`cook` is logged, so `mep history` shows what you've made recently and `show`
+notes when you last cooked it. `mep edit <id>` opens the recipe's fields as JSON
+in your `$EDITOR` for a precise hand-fix (no model call); saving clears the
+derived caches (classification, plan, pairings) since the content changed.
+
+`mep pantry add/remove/list` tracks what you keep on hand, and `mep cook-now`
+ranks your recipes by how few ingredients you'd still need to buy ("have
+everything!" first), showing the shopping gap for each.
+
+For backup or moving machines, `mep export --all -o backup.json` writes every
+recipe (with its rating, notes, and classification) to one JSON file, and
+`mep import backup.json` restores them, skipping any whose source you already
+have.
 
 To support that, every recipe is given a meal type and a 1-10 health score (10 =
 lean and vegetable-forward, 1 = rich and indulgent) by a small model call at
