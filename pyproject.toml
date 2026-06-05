@@ -1,6 +1,6 @@
 [project]
 name = "mise-en-place"
-version = "1.1.0"
+version = "1.2.0"
 description = "Extract structured recipes from YouTube cooking videos with Claude, stored in local SQLite."
 readme = "README.md"
 requires-python = ">=3.10"

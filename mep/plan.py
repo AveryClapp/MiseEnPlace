@@ -49,12 +49,44 @@ recipe gives them (e.g. "2 cups yogurt"). Empty array if none.
 "chicken marinade", "dough rise"). Use null for active tasks.
 - Keep instructions concise and in the order they should be done."""
 
+COMBINED_SYSTEM_PROMPT = (
+    SYSTEM_PROMPT.replace(
+        "Given a recipe's steps,",
+        "Given SEVERAL dishes the cook is making together,",
+    ).replace(
+        "produce an efficient cooking timeline a cook can follow in real time.",
+        "interleave them into ONE efficient timeline the cook can follow in real "
+        "time, aiming to have every dish ready around the same time.",
+    ).replace(
+        '"instruction": string,',
+        '"dish": string,\n      "instruction": string,',
+    )
+    + "\n\n- dish: the exact name of the dish this task belongs to (from the list "
+    "you are given). Every task must name its dish.\n- Slot one dish's hands-on "
+    "prep into another dish's hands-off waits so the cook is never idle."
+)
+
 
 def generate_plan(recipe_data: dict, *, config: dict) -> list[dict]:
     """Return a validated, ordered list of task dicts. `recipe_data` is
     db.get_recipe()."""
     text = complete(
         config, system=SYSTEM_PROMPT, user=_format_input(recipe_data), max_tokens=3000
+    )
+    data = _parse_json(text)
+    tasks = data.get("tasks")
+    if not isinstance(tasks, list):
+        raise MepError("The model did not return a task list for the plan.")
+    return _normalize_tasks(tasks)
+
+
+def generate_combined_plan(recipes: list[dict], *, config: dict) -> list[dict]:
+    """Interleave several recipes into one timeline with one model call. Each
+    task carries a `dish` label. `recipes` is a list of db.get_recipe() dicts.
+    Not cached — this is an ad-hoc combination."""
+    text = complete(
+        config, system=COMBINED_SYSTEM_PROMPT,
+        user=_format_combined_input(recipes), max_tokens=4000,
     )
     data = _parse_json(text)
     tasks = data.get("tasks")
@@ -83,6 +115,7 @@ def _normalize_tasks(tasks: list) -> list[dict]:
 
         cleaned.append(
             {
+                "dish": _clean_str(task.get("dish")),
                 "instruction": instruction,
                 "duration_minutes": duration,
                 "mode": mode,
@@ -125,3 +158,15 @@ def _format_input(recipe_data: dict) -> str:
         f"{s['step_number']}. {s['instruction']}" for s in recipe_data["steps"]
     )
     return f"Dish: {name}\n\nIngredients:\n{ingredients}\n\nSteps:\n{steps}"
+
+
+def _format_combined_input(recipes: list[dict]) -> str:
+    """One block per dish, each formatted like a single-recipe input, under a
+    header naming all the dishes being cooked together."""
+    names = [
+        r["recipe"]["dish_name"] or r["recipe"]["title"] or "(unknown dish)"
+        for r in recipes
+    ]
+    header = "Cooking these dishes together: " + ", ".join(names) + "."
+    blocks = [f"=== {name} ===\n{_format_input(r)}" for name, r in zip(names, recipes)]
+    return header + "\n\n" + "\n\n".join(blocks)

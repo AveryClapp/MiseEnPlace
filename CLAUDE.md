@@ -104,6 +104,12 @@ docs/plans/      Design docs
 - **Plans are cached** in `plan_steps` (one ordered set per recipe). `plan`
   generates on first use, reuses after; `plan --regenerate` and `save_plan`
   overwrite cleanly. `cook` never calls Claude if a plan already exists.
+- **Combined plans (`--with`) are never cached.** `plan`/`cook --with <id>`
+  (repeatable) interleave several recipes into one timeline via
+  `plan.generate_combined_plan` (one uncached call), and each task carries a
+  `dish` label (`None` on single-recipe plans, which are otherwise unchanged).
+  `--with` is mutually exclusive with `cook --have/--sub`; a combined `cook`
+  increments `times_cooked` for every recipe in the session.
 
 ## Extraction
 

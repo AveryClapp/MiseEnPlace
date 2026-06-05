@@ -153,7 +153,10 @@ def _present_step(i, tasks, timers, interactive) -> None:
     passive = task.get("mode") == "passive"
     tag = f"{'passive' if passive else 'active'} ~{fmt_duration(task.get('duration_minutes'))}"
 
-    click.secho(f"Step {i + 1} of {len(tasks)}   [{tag}]", fg="cyan")
+    head = f"Step {i + 1} of {len(tasks)}   [{tag}]"
+    if task.get("dish"):
+        head += f"   {task['dish']}"
+    click.secho(head, fg="cyan")
     click.echo(f"  {task.get('instruction')}")
     if task.get("ingredients"):
         click.echo("  uses: " + ", ".join(task["ingredients"]))

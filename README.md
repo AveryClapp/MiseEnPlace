@@ -91,7 +91,9 @@ mep shopping-list 42 7 13                              # one combined grocery li
 
 mep plan 42                                          # AI cooking timeline (experimental)
 mep plan 42 --servings 8                             # ...scaled to 8 servings
+mep plan 42 --with 7                                 # interleave a side into one timeline
 mep cook 42                                          # step-by-step walkthrough (experimental)
+mep cook 42 --with 7                                 # cook a main + side in one session
 
 mep show 42 --parts                                  # what each ingredient is for
 mep adapt 42                                         # rewrite around what you have (interactive)
@@ -119,6 +121,13 @@ recipe with no recorded serving count is treated as a single serving (the batch
 as written), so `--servings 3` simply makes 3× the recipe. Use `mep set-servings
 <id> <count>` to record the real serving count when you know it, so scaling maps
 to people instead.
+
+`--with <id>` (on `plan` and `cook`, repeatable) merges a side or second dish
+into one interleaved timeline, slotting each dish's hands-on prep into the
+other's hands-off waits so everything finishes together. Every step is labeled
+with its dish and the mise en place is merged. This combined plan is generated
+fresh each time (one model call, not cached), and a combined `cook` counts toward
+every dish in the session.
 
 Both `plan` and `cook` are experimental: the timings are AI estimates.
 

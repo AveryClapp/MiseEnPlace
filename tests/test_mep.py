@@ -5,6 +5,7 @@ SQLite round-trip including FTS search. Set MEP_HOME to a tmp dir before
 importing mep modules that read config paths.
 """
 
+import json
 import os
 import sqlite3
 import tempfile
@@ -13,7 +14,7 @@ import pytest
 
 os.environ["MEP_HOME"] = tempfile.mkdtemp()
 
-from mep import adapt, cli, config, cook, db, ingest, scale, shopping, web  # noqa: E402
+from mep import adapt, cli, config, cook, db, ingest, plan, scale, shopping, web  # noqa: E402
 from mep.classify import _normalize as _normalize_classification  # noqa: E402
 from mep.pairing import _normalize as _normalize_pairings  # noqa: E402
 from mep.components import _normalize_components  # noqa: E402
@@ -343,6 +344,87 @@ def test_normalize_tasks_coerces_and_cleans():
 def test_normalize_tasks_all_empty_raises():
     with pytest.raises(MepError):
         _normalize_tasks([{"instruction": ""}, "junk"])
+
+
+# --- combined plan (cook a side + main together) ------------------------------
+
+
+def test_normalize_tasks_carries_dish_label():
+    tasks = _normalize_tasks(
+        [
+            {"instruction": "boil pasta", "dish": "Spaghetti", "duration_minutes": 10, "mode": "active"},
+            {"instruction": "toast bread", "duration_minutes": 5, "mode": "active"},
+        ]
+    )
+    assert tasks[0]["dish"] == "Spaghetti"
+    assert tasks[1]["dish"] is None  # absent -> None, so single-recipe plans are unaffected
+
+
+def test_format_combined_input_names_each_dish():
+    a = {"recipe": {"dish_name": "Steak", "title": None}, "ingredients": [], "steps": []}
+    b = {"recipe": {"dish_name": "Mashed Potatoes", "title": None}, "ingredients": [], "steps": []}
+    text = plan._format_combined_input([a, b])
+    assert "=== Steak ===" in text
+    assert "=== Mashed Potatoes ===" in text
+    assert "Cooking these dishes together: Steak, Mashed Potatoes." in text
+
+
+def test_generate_combined_plan_returns_labeled_tasks(monkeypatch):
+    monkeypatch.setattr(
+        plan, "complete",
+        lambda config, *, system, user, max_tokens: json.dumps(
+            {"tasks": [
+                {"dish": "Steak", "instruction": "sear", "duration_minutes": 6, "mode": "active"},
+                {"dish": "Mash", "instruction": "boil potatoes", "duration_minutes": 15, "mode": "passive"},
+            ]}
+        ),
+    )
+    a = {"recipe": {"dish_name": "Steak", "title": None}, "ingredients": [], "steps": []}
+    b = {"recipe": {"dish_name": "Mash", "title": None}, "ingredients": [], "steps": []}
+    tasks = plan.generate_combined_plan([a, b], config={})
+    assert [t["dish"] for t in tasks] == ["Steak", "Mash"]
+
+
+def _seed_recipe_with_step(conn, video_id, name):
+    return db.insert_recipe(
+        conn, video_id=video_id, title="t", channel="c", url="u", raw_transcript="x",
+        extracted={
+            "dish_name": name,
+            "ingredients": [{"name": "salt", "quantity": "1", "unit": "tsp"}],
+            "steps": ["do the thing"],
+            "tags": [],
+        },
+    )
+
+
+def test_load_combined_validates_and_orders():
+    db.init_db()
+    conn = db.connect()
+    main = _seed_recipe_with_step(conn, "combomain01", "Steak")
+    side = _seed_recipe_with_step(conn, "comboside01", "Mash")
+    recipes = cli._load_combined(conn, main, (side, main))  # dup main is dropped
+    assert [r["recipe"]["dish_name"] for r in recipes] == ["Steak", "Mash"]
+
+
+def test_load_combined_rejects_single_and_missing():
+    db.init_db()
+    conn = db.connect()
+    main = _seed_recipe_with_step(conn, "combomain02", "Steak")
+    with pytest.raises(MepError):  # nothing distinct to combine
+        cli._load_combined(conn, main, (main,))
+    with pytest.raises(MepError):  # unknown id
+        cli._load_combined(conn, main, (999999,))
+
+
+def test_combined_gather_prefixes_each_dish():
+    db.init_db()
+    conn = db.connect()
+    main = _seed_recipe_with_step(conn, "combomain03", "Steak")
+    side = _seed_recipe_with_step(conn, "comboside03", "Mash")
+    recipes = cli._load_combined(conn, main, (side,))
+    lines = cli._combined_gather(recipes)
+    assert any(line.startswith("[Steak] ") for line in lines)
+    assert any(line.startswith("[Mash] ") for line in lines)
 
 
 # --- enriched plan storage round-trip -----------------------------------------

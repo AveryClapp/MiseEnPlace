@@ -20,7 +20,7 @@ from .config import (
     require_api_key,
 )
 from .errors import MepError
-from .plan import generate_plan
+from .plan import generate_combined_plan, generate_plan
 
 
 @click.group()
@@ -369,14 +369,31 @@ def show(recipe_id, servings, parts, macros, check):
 @click.argument("recipe_id", type=int)
 @click.option("--regenerate", is_flag=True, help="Rebuild the plan from scratch.")
 @click.option("--servings", type=int, default=None, help="Scale ingredients to N servings.")
-def plan(recipe_id, regenerate, servings):
-    """Generate a cooking timeline for a recipe (experimental)."""
+@click.option(
+    "--with", "with_ids", multiple=True, type=int,
+    help="Also cook this recipe in the same timeline (repeatable).",
+)
+def plan(recipe_id, regenerate, servings, with_ids):
+    """Generate a cooking timeline for a recipe (experimental).
+
+    Pass --with <id> (repeatable) to interleave a side or second dish into one
+    combined timeline.
+    """
     config = load_config()
     db.init_db()  # ensure plan_steps exists / is migrated on older databases
     conn = db.connect()
     data = db.get_recipe(conn, recipe_id)
     if data is None:
         raise MepError(f"No recipe with id {recipe_id}.")
+
+    if with_ids:
+        recipes = _load_combined(conn, recipe_id, with_ids)
+        require_api_key(config)
+        click.echo("Generating combined cook plan...")
+        tasks = generate_combined_plan(recipes, config=config)
+        _render_plan(_combined_recipe(recipes), tasks, _combined_gather(recipes))
+        return
+
     tasks = _ensure_plan(conn, config, data, regenerate)
     gather, note = _gather_lines(data, servings)
     _render_plan(data["recipe"], tasks, gather, note)
@@ -387,14 +404,37 @@ def plan(recipe_id, regenerate, servings):
 @click.option("--servings", type=int, default=None, help="Scale ingredients to N servings.")
 @click.option("--have", default=None, help="Parts you already have (comma-separated); adapts this cook only.")
 @click.option("--sub", "subs", multiple=True, help='Ingredient swap "x=y" (repeatable).')
-def cook(recipe_id, servings, have, subs):
-    """Walk through a recipe's timeline step by step (experimental)."""
+@click.option(
+    "--with", "with_ids", multiple=True, type=int,
+    help="Also cook this recipe in the same session (repeatable).",
+)
+def cook(recipe_id, servings, have, subs, with_ids):
+    """Walk through a recipe's timeline step by step (experimental).
+
+    Pass --with <id> (repeatable) to cook a side or second dish in the same
+    interleaved session.
+    """
     config = load_config()
     db.init_db()
     conn = db.connect()
     data = db.get_recipe(conn, recipe_id)
     if data is None:
         raise MepError(f"No recipe with id {recipe_id}.")
+
+    if with_ids:
+        if have or subs:
+            raise click.UsageError("--with can't be combined with --have/--sub.")
+        recipes = _load_combined(conn, recipe_id, with_ids)
+        require_api_key(config)
+        click.echo("Generating combined cook plan...")
+        tasks = generate_combined_plan(recipes, config=config)
+        cook_mod.run(
+            _combined_recipe(recipes), tasks, gather_lines=_combined_gather(recipes)
+        )
+        for data in recipes:
+            db.increment_cook_count(conn, data["recipe"]["id"])
+        click.secho(f"Cooked {len(recipes)} dishes together.", fg="green")
+        return
 
     have_list = _split_csv(have)
     sub_map = _collect_subs(subs)
@@ -463,6 +503,44 @@ def _ensure_plan(conn, config, data, regenerate):
     return tasks
 
 
+def _load_combined(conn, recipe_id, with_ids):
+    """Validate the main recipe plus each --with id, returning their full
+    db.get_recipe() dicts in order (main first). Each must exist and have steps."""
+    ids = [recipe_id] + [i for i in with_ids if i != recipe_id]
+    recipes = []
+    for rid in ids:
+        data = db.get_recipe(conn, rid)
+        if data is None:
+            raise MepError(f"No recipe with id {rid}.")
+        if not data["steps"]:
+            name = data["recipe"]["dish_name"] or data["recipe"]["title"] or f"recipe {rid}"
+            raise MepError(f"'{name}' has no steps to cook.")
+        recipes.append(data)
+    if len(recipes) < 2:
+        raise MepError("Give at least one different recipe with --with.")
+    return recipes
+
+
+def _combined_recipe(recipes: list[dict]) -> dict:
+    """A recipe-shaped dict whose name is all the dishes joined, for headers."""
+    names = [
+        r["recipe"]["dish_name"] or r["recipe"]["title"] or "recipe" for r in recipes
+    ]
+    return {"dish_name": " + ".join(names), "title": None}
+
+
+def _combined_gather(recipes: list[dict]) -> list[str]:
+    """Merged mise-en-place across dishes, each line prefixed with its dish."""
+    lines = []
+    for r in recipes:
+        name = r["recipe"]["dish_name"] or r["recipe"]["title"] or "recipe"
+        for ing in r["ingredients"]:
+            line = _ingredient_line(ing)
+            if line:
+                lines.append(f"[{name}] {line}")
+    return lines
+
+
 def _render_plan(recipe: dict, tasks: list[dict], gather=None, note=None) -> None:
     name = recipe["dish_name"] or recipe["title"] or "recipe"
     hands_on = sum(t["duration_minutes"] or 0 for t in tasks if t["mode"] == "active")
@@ -482,7 +560,8 @@ def _render_plan(recipe: dict, tasks: list[dict], gather=None, note=None) -> Non
         click.echo()
     for i, task in enumerate(tasks, start=1):
         tag = f"{task['mode']} {cook_mod.fmt_duration(task['duration_minutes'])}"
-        click.echo(f"  {i:>2}  [{tag}]  {task['instruction']}")
+        prefix = click.style(f"[{task['dish']}] ", fg="magenta") if task.get("dish") else ""
+        click.echo(f"  {i:>2}  [{tag}]  {prefix}{task['instruction']}")
         if task.get("overlap_hint"):
             click.echo(f"      └ {task['overlap_hint']}")
     click.echo()
