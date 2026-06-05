@@ -28,6 +28,38 @@ def parse_base_servings(servings) -> int | None:
     return int(match.group()) if match else None
 
 
+# Hours/minutes inside a cook_time string. The single-letter h/m forms are
+# allowed (for "1h30m") as long as a letter doesn't follow, so "hot" never reads
+# as hours. Matched greedily across the string, so "1 hr 30 min" sums to 90.
+_HOURS = re.compile(r"(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)(?![a-z])", re.IGNORECASE)
+_MINUTES = re.compile(r"(\d+(?:\.\d+)?)\s*(?:minutes?|mins?|m)(?![a-z])", re.IGNORECASE)
+
+
+def parse_minutes(cook_time) -> int | None:
+    """Best-effort total minutes from a freeform cook_time ('30 minutes',
+    '1 hr 30 min', '1h30m', '1:30', '45'). For a range ('30-40 min') the upper
+    bound wins, so a max-time filter never lets a too-long recipe slip through.
+    Returns None when no number is present ('overnight', 'a while')."""
+    if cook_time is None:
+        return None
+    text = str(cook_time).lower()
+    clock = re.search(r"(\d+):(\d{2})", text)  # "1:30" -> 1h30m
+    if clock:
+        return int(clock.group(1)) * 60 + int(clock.group(2))
+    total = 0.0
+    found = False
+    for match in _HOURS.finditer(text):
+        total += float(match.group(1)) * 60
+        found = True
+    for match in _MINUTES.finditer(text):
+        total += float(match.group(1))
+        found = True
+    if found:
+        return int(round(total))
+    bare = re.search(r"\d+(?:\.\d+)?", text)  # a lone number means minutes ('45')
+    return int(round(float(bare.group()))) if bare else None
+
+
 def scale_quantity(quantity, factor: float):
     """Scale the leading amount of a quantity string by factor. Vague or
     unparseable quantities are returned unchanged."""

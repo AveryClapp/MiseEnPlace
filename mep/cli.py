@@ -7,7 +7,8 @@ import click
 
 from . import adapt as adapt_mod
 from . import cook as cook_mod
-from . import classify, db, ingest, scale, shopping
+from . import tui as tui_mod
+from . import classify, cookware, db, ingest, scale, shopping
 from .components import analyze_components
 from .gaps import find_gaps
 from .nutrition import estimate_macros
@@ -176,11 +177,15 @@ def search(query):
 
 @cli.command(name="list")
 @click.option("--tag", default=None, help="Only recipes with this tag.")
+@click.option(
+    "--max-time", type=int, default=None,
+    help="Only recipes that cook in this many minutes or less.",
+)
 @click.option("--limit", type=int, default=None, help="Max recipes to show.")
-def list_cmd(tag, limit):
+def list_cmd(tag, max_time, limit):
     """Browse stored recipes, newest first."""
     conn = db.connect()
-    rows = db.list_recipes(conn, tag=tag, limit=limit)
+    rows = db.list_recipes(conn, tag=tag, limit=limit, max_time=max_time)
     if not rows:
         click.echo("No recipes yet. Add one with `mep add <url>`.")
         return
@@ -268,19 +273,28 @@ def shopping_list(recipe_ids):
     "-i", "--ingredient", "ingredients", multiple=True,
     help="Must use this ingredient (repeatable).",
 )
+@click.option(
+    "--max-time", type=int, default=None,
+    help="Only recipes that cook in this many minutes or less.",
+)
 @click.option("-n", "--count", type=int, default=1, help="How many to pick (default 1).")
-def discover(meal_type, healthy, indulgent, min_health, max_health, ingredients, count):
-    """Pick a random recipe, optionally by type, health, or ingredients."""
+def discover(meal_type, healthy, indulgent, min_health, max_health, ingredients, max_time, count):
+    """Pick a random recipe, optionally by type, health, ingredients, or time."""
     conn = db.connect()
     lo, hi = _health_range(healthy, indulgent, min_health, max_health)
     wants = [i.strip() for i in ingredients if i.strip()]
     rows = db.discover(
         conn, meal_type=meal_type, min_health=lo, max_health=hi,
-        ingredients=wants, count=max(1, count),
+        ingredients=wants, max_time=max_time, count=max(1, count),
     )
     if not rows:
         click.echo("No matching recipes.")
         _classify_hint(conn, meal_type, lo, hi)
+        if max_time is not None:
+            click.secho(
+                "  (Recipes without a recorded cook time are excluded by --max-time.)",
+                fg="yellow",
+            )
         return
     if count == 1 and len(rows) == 1:
         _render(db.get_recipe(conn, rows[0]["id"]))
@@ -307,6 +321,40 @@ def classify_cmd(reclassify):
         name = data["recipe"]["dish_name"] or data["recipe"]["title"] or "recipe"
         click.echo(f"  {rid:>4}  {name}  ->  {_classification_str(cls['meal_type'], cls['health_score'])}")
     click.echo(f"Classified {len(ids)} recipe(s).")
+
+
+@cli.command(name="clarify")
+@click.argument("recipe_ids", type=int, nargs=-1)
+@click.option("--all", "do_all", is_flag=True, help="Clarify every recipe that has steps.")
+def clarify_cmd(recipe_ids, do_all):
+    """Rewrite stored steps to name the pots/pans they use (opt-in).
+
+    Give recipe ids, or --all for the whole collection. New recipes already get
+    cookware named at ingest; this backfills ones added earlier.
+    """
+    config = load_config()
+    conn = db.connect()
+    if recipe_ids:
+        ids = list(recipe_ids)
+        for rid in ids:
+            if db.get_recipe(conn, rid) is None:
+                raise MepError(f"No recipe with id {rid}.")
+    elif do_all:
+        ids = db.recipe_ids_with_steps(conn)
+    else:
+        raise click.UsageError("Give recipe ids, or --all.")
+    require_api_key(config)
+    changed = 0
+    for rid in ids:
+        data = db.get_recipe(conn, rid)
+        if not data["steps"]:
+            continue
+        steps = cookware.clarify_steps(data, config=config)
+        db.replace_steps(conn, rid, steps)
+        name = data["recipe"]["dish_name"] or data["recipe"]["title"] or f"recipe {rid}"
+        click.echo(f"  clarified {name}")
+        changed += 1
+    click.echo(f"Clarified {changed} recipe(s).")
 
 
 @cli.command(name="pair")
@@ -408,11 +456,15 @@ def plan(recipe_id, regenerate, servings, with_ids):
     "--with", "with_ids", multiple=True, type=int,
     help="Also cook this recipe in the same session (repeatable).",
 )
-def cook(recipe_id, servings, have, subs, with_ids):
+@click.option(
+    "--tui", is_flag=True,
+    help="Full-screen cook-along that visualizes each pot/pan (needs the [tui] extra).",
+)
+def cook(recipe_id, servings, have, subs, with_ids, tui):
     """Walk through a recipe's timeline step by step (experimental).
 
     Pass --with <id> (repeatable) to cook a side or second dish in the same
-    interleaved session.
+    interleaved session, or --tui for a full-screen view of every pot and pan.
     """
     config = load_config()
     db.init_db()
@@ -428,9 +480,12 @@ def cook(recipe_id, servings, have, subs, with_ids):
         require_api_key(config)
         click.echo("Generating combined cook plan...")
         tasks = generate_combined_plan(recipes, config=config)
-        cook_mod.run(
-            _combined_recipe(recipes), tasks, gather_lines=_combined_gather(recipes)
-        )
+        if tui:
+            tui_mod.run(_combined_recipe(recipes), tasks)
+        else:
+            cook_mod.run(
+                _combined_recipe(recipes), tasks, gather_lines=_combined_gather(recipes)
+            )
         for data in recipes:
             db.increment_cook_count(conn, data["recipe"]["id"])
         click.secho(f"Cooked {len(recipes)} dishes together.", fg="green")
@@ -454,8 +509,11 @@ def cook(recipe_id, servings, have, subs, with_ids):
     else:
         tasks = _ensure_plan(conn, config, data, regenerate=False)
 
-    gather, note = _gather_lines(data, servings)
-    cook_mod.run(data["recipe"], tasks, gather_lines=gather, scale_note=note)
+    if tui:
+        tui_mod.run(data["recipe"], tasks)
+    else:
+        gather, note = _gather_lines(data, servings)
+        cook_mod.run(data["recipe"], tasks, gather_lines=gather, scale_note=note)
     total = db.increment_cook_count(conn, recipe_id)
     click.secho(f"Cooked {total}x total.", fg="green")
 
@@ -562,6 +620,8 @@ def _render_plan(recipe: dict, tasks: list[dict], gather=None, note=None) -> Non
         tag = f"{task['mode']} {cook_mod.fmt_duration(task['duration_minutes'])}"
         prefix = click.style(f"[{task['dish']}] ", fg="magenta") if task.get("dish") else ""
         click.echo(f"  {i:>2}  [{tag}]  {prefix}{task['instruction']}")
+        if task.get("equipment"):
+            click.secho(f"      equipment: {', '.join(task['equipment'])}", fg="blue")
         if task.get("overlap_hint"):
             click.echo(f"      └ {task['overlap_hint']}")
     click.echo()

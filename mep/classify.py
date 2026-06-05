@@ -9,7 +9,7 @@ backfilled by `mep classify`.
 from .extract import _parse_json
 from .llm import complete
 
-MEAL_TYPES = ("breakfast", "lunch", "dinner", "snack", "dessert")
+MEAL_TYPES = ("breakfast", "lunch", "dinner", "snack", "sweets")
 _ALLOWED = set(MEAL_TYPES)
 
 SYSTEM_PROMPT = """You classify a cooking recipe into a meal type and a health \
@@ -18,11 +18,12 @@ score.
 Return ONLY a single JSON object, no markdown fences and no commentary, with \
 exactly this shape:
 {
-  "meal_type": "breakfast" | "lunch" | "dinner" | "snack" | "dessert",
+  "meal_type": "breakfast" | "lunch" | "dinner" | "snack" | "sweets",
   "health_score": integer from 1 to 10
 }
 
-- meal_type: the single best fit for when this dish is usually eaten.
+- meal_type: the single best fit for when this dish is usually eaten. Use \
+"sweets" for desserts and sweet treats (cakes, cookies, candy, ice cream).
 - health_score: 1 means very indulgent (rich, fried, sugary, heavy), 10 means \
 very healthy (lean, vegetable-forward, minimally processed). Judge from the \
 ingredients and how it is cooked, and use the full range."""

@@ -54,7 +54,10 @@ For each recipe:
 splash"). Never normalize or convert units.
 - Use null for anything the transcript does not state. Never guess servings, \
 cook_time, or difficulty.
-- Each step is one concise instruction, in order.
+- Each step is one concise instruction, in order. When a step uses a specific \
+pot, pan, or vessel, name it ("In a large skillet, sear...", "Bring a large pot \
+of salted water to a boil"), preferring what the source says and otherwise the \
+sensible default for the action. Don't invent oddly specific gear.
 - tags: 2-6 short lowercase labels (cuisine, course, main technique or \
 ingredient) when inferable; otherwise an empty array."""
 

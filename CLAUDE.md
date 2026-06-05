@@ -19,7 +19,8 @@ over on first run.
 ```
 mep/
   cli.py         Click commands (init, add, search, list, show, discover, classify,
-                 pair, set-servings, export, delete, shopping-list, plan, cook, adapt)
+                 clarify, pair, set-servings, export, delete, shopping-list, plan,
+                 cook, adapt)
   config.py      ~/.mep paths, config load/validate, model id, legacy migration
   errors.py      MepError — user-fixable problems, caught in cli.main()
   llm.py         complete / complete_vision: shared model call (Anthropic/OpenAI),
@@ -32,13 +33,15 @@ mep/
   ingest.py      Orchestration: _store_recipes + add_video/add_channel/add_url/
                  add_text/add_images/add_source (dispatch a file, URL, or images)
   plan.py        Recipe -> Claude -> cooking timeline (experimental)
-  cook.py        Live step-by-step walkthrough + pure timer helpers
-  scale.py       Best-effort serving-size quantity scaling (pure)
+  cook.py        Live step-by-step walkthrough + pure timer/lane helpers
+  tui.py         Optional full-screen cook-along (Textual; lazy-imported)
+  scale.py       Best-effort serving-size scaling + cook_time -> minutes (pure)
   components.py  Recipe -> Claude -> component breakdown (for adapt)
   adapt.py       Recipe -> Claude -> rewrite around what you have (experimental)
   nutrition.py   Recipe -> Claude -> macro estimate (lazy, cached)
   gaps.py        Recipe -> Claude -> likely missing-step/gap flags (lazy, cached)
   classify.py    Recipe -> Claude -> meal_type + 1-10 health_score (for discover)
+  cookware.py    Recipe steps -> Claude -> steps rewritten to name pots/pans (clarify)
   pairing.py     Recipe + collection -> Claude -> generic ideas + match ids (opt-in)
   shopping.py    Recipes -> Claude -> one combined grocery list (display-only)
 tests/           Offline unit tests (no network, no keys)
@@ -79,7 +82,18 @@ docs/plans/      Design docs
   skipped. `mep classify` backfills recipes with `meal_type IS NULL` (or `--all`
   to redo). `db.discover` filters on these columns, so unclassified recipes are
   naturally excluded from type/health filters. Cleared on overwrite alongside
-  the macro/gap caches.
+  the macro/gap caches. `MEAL_TYPES` is `breakfast/lunch/dinner/snack/sweets`
+  (`sweets` replaced the old `dessert`; `_migrate` renames legacy rows).
+- **`--max-time N` filters by cook time** on `discover` and `list`. cook_time is
+  freeform TEXT, so `scale.parse_minutes` parses it (ranges take the upper bound)
+  and the filter runs in Python, not SQL; recipes with no parseable cook time are
+  excluded.
+- **`mep clarify` rewrites stored steps to name cookware** (`cookware.py`, one
+  call per recipe; ids or `--all`). New recipes already get pots/pans named at
+  extraction. It mutates only the `steps` rows via `db.replace_steps` (re-numbers,
+  clears the now-stale cached plan; FTS doesn't index steps) and keeps the
+  originals if the model returns the wrong step count. `plan`/`cook` also show a
+  per-step `equipment:` line.
 - **Pairing is opt-in.** `mep add --pair` (at ingest) or `mep pair <id>` / `--all`
   runs one `pairing.py` call per recipe; nothing pairs automatically. It stores
   generic ideas in `pairings_json` and inserts undirected edges into
@@ -104,6 +118,15 @@ docs/plans/      Design docs
 - **Plans are cached** in `plan_steps` (one ordered set per recipe). `plan`
   generates on first use, reuses after; `plan --regenerate` and `save_plan`
   overwrite cleanly. `cook` never calls Claude if a plan already exists.
+- **`cook --tui` is an optional full-screen view** (`tui.py`, Textual as the
+  `[tui]` extra, imported lazily inside `tui._app_class()` so core stays dep-free
+  and offline tests still import it; missing extra raises a clean `MepError`). It
+  draws one lane per cookware spot from each task's `equipment` (pure
+  `cook.plan_lanes`/`lane_for_task`, which skip heat sources and prep tools).
+  Deliberate behavior: no assumed start times (a lane counts only once you start
+  that step) and timers ring but never auto-advance — a finished lane holds at
+  `READY` until acknowledged (`a`). The pure helpers are unit-tested; the app is
+  driven by a headless Textual pilot guarded by `importorskip`.
 - **Combined plans (`--with`) are never cached.** `plan`/`cook --with <id>`
   (repeatable) interleave several recipes into one timeline via
   `plan.generate_combined_plan` (one uncached call), and each task carries a

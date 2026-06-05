@@ -7,6 +7,7 @@ rows, and enable foreign keys so deleting a recipe cascades to its children.
 import json
 import sqlite3
 
+from . import scale
 from .config import DB_PATH
 
 # Columns added after the first release; backfilled onto existing databases.
@@ -146,6 +147,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # Recipes predate the multi-source feature; they were all from YouTube. New
     # inserts always set source_type, so the only NULLs are these legacy rows.
     conn.execute("UPDATE recipes SET source_type = 'youtube' WHERE source_type IS NULL")
+    # The 'dessert' meal type was renamed to 'sweets'; migrate any older rows.
+    conn.execute("UPDATE recipes SET meal_type = 'sweets' WHERE meal_type = 'dessert'")
 
 
 def video_exists(conn: sqlite3.Connection, video_id: str) -> bool:
@@ -323,6 +326,28 @@ def recipe_ids_for_classify(
         sql += " AND meal_type IS NULL"
     sql += " ORDER BY id"
     return [r["id"] for r in conn.execute(sql)]
+
+
+def recipe_ids_with_steps(conn: sqlite3.Connection) -> list[int]:
+    """Ids of recipes that have at least one step (what `clarify` can target)."""
+    rows = conn.execute(
+        "SELECT DISTINCT recipe_id FROM steps ORDER BY recipe_id"
+    ).fetchall()
+    return [r["recipe_id"] for r in rows]
+
+
+def replace_steps(conn: sqlite3.Connection, recipe_id: int, steps: list[str]) -> None:
+    """Replace just a recipe's steps (re-numbered from 1), clearing the cached
+    plan built from the old wording. Ingredients, tags, FTS (which doesn't index
+    steps), and the other caches are left untouched."""
+    rows = [(recipe_id, i, s) for i, s in enumerate((s for s in steps if s), start=1)]
+    with conn:
+        conn.execute("DELETE FROM steps WHERE recipe_id = ?", (recipe_id,))
+        conn.executemany(
+            "INSERT INTO steps (recipe_id, step_number, instruction) VALUES (?, ?, ?)",
+            rows,
+        )
+        conn.execute("DELETE FROM plan_steps WHERE recipe_id = ?", (recipe_id,))
 
 
 def increment_cook_count(conn: sqlite3.Connection, recipe_id: int) -> int:
@@ -640,11 +665,14 @@ def discover(
     min_health: int | None = None,
     max_health: int | None = None,
     ingredients: list[str] | tuple[str, ...] = (),
+    max_time: int | None = None,
     count: int = 1,
 ) -> list[sqlite3.Row]:
     """Randomly pick up to `count` real recipes matching the given filters. A
-    recipe must include every listed ingredient (substring match). Recipes not
-    yet classified are naturally excluded by the meal_type/health filters."""
+    recipe must include every listed ingredient (substring match). With
+    `max_time` (minutes), only recipes whose cook_time parses to that or less
+    qualify (ones without a parseable time are excluded). Recipes not yet
+    classified are naturally excluded by the meal_type/health filters."""
     where = ["dish_name IS NOT NULL"]
     params: list = []
     if meal_type:
@@ -663,23 +691,45 @@ def discover(
         )
         params.append(f"%{ing}%")
     sql = (
-        "SELECT id, dish_name, channel, title, meal_type, health_score FROM recipes"
-        " WHERE " + " AND ".join(where) + " ORDER BY RANDOM() LIMIT ?"
+        "SELECT id, dish_name, channel, title, meal_type, health_score, cook_time"
+        " FROM recipes WHERE " + " AND ".join(where) + " ORDER BY RANDOM()"
     )
-    params.append(count)
-    return conn.execute(sql, params).fetchall()
+    # cook_time is freeform text, so the time filter happens in Python: fetch the
+    # random-ordered candidates and take the first `count` that fit the limit.
+    if max_time is None:
+        return conn.execute(sql + " LIMIT ?", params + [count]).fetchall()
+    picked = []
+    for row in conn.execute(sql, params):
+        minutes = scale.parse_minutes(row["cook_time"])
+        if minutes is not None and minutes <= max_time:
+            picked.append(row)
+            if len(picked) >= count:
+                break
+    return picked
 
 
 def list_recipes(
-    conn: sqlite3.Connection, tag: str | None = None, limit: int | None = None
+    conn: sqlite3.Connection,
+    tag: str | None = None,
+    limit: int | None = None,
+    max_time: int | None = None,
 ) -> list[sqlite3.Row]:
+    """Browse recipes newest first. `max_time` (minutes) keeps only recipes whose
+    cook_time parses to that or less (filtered in Python, since cook_time is
+    freeform text); ones without a parseable time are excluded."""
     params: list = []
-    sql = "SELECT DISTINCT r.id, r.dish_name, r.channel, r.title FROM recipes r"
+    sql = "SELECT DISTINCT r.id, r.dish_name, r.channel, r.title, r.cook_time FROM recipes r"
     if tag:
         sql += " JOIN tags t ON t.recipe_id = r.id WHERE t.tag = ?"
         params.append(tag)
     sql += " ORDER BY r.created_at DESC, r.id DESC"
-    if limit:
-        sql += " LIMIT ?"
-        params.append(limit)
-    return conn.execute(sql, params).fetchall()
+    if max_time is None:
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return conn.execute(sql, params).fetchall()
+    rows = [
+        r for r in conn.execute(sql, params)
+        if (m := scale.parse_minutes(r["cook_time"])) is not None and m <= max_time
+    ]
+    return rows[:limit] if limit else rows

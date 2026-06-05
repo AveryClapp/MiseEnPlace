@@ -101,6 +101,53 @@ def preheat_cue(tasks: list[dict], i: int) -> str | None:
     return None
 
 
+# --- equipment lanes (for the optional TUI) -----------------------------------
+
+# Substrings that mark a piece of equipment as a "spot" that holds food over
+# time. Heat sources (stove/burner) and handheld prep tools (knife, whisk) are
+# deliberately excluded — they aren't places food sits and cooks.
+_LANE_KEYWORDS = (
+    "oven", "pot", "pan", "skillet", "saucepan", "wok", "grill", "griddle",
+    "broiler", "fryer", "slow cooker", "crock", "pressure cooker", "instant pot",
+    "dutch oven", "roasting", "sheet", "baking dish", "casserole", "steamer",
+    "smoker", "microwave", "kettle",
+)
+
+
+def lane_for_task(task: dict) -> str | None:
+    """The cookware 'spot' a task occupies (oven, a pot, a pan...), or None for
+    pure prep. Returns the first equipment item that names a vessel/appliance."""
+    for item in task.get("equipment") or []:
+        if _is_lane_equipment(item):
+            return item
+    return None
+
+
+def _is_lane_equipment(name: str) -> bool:
+    low = name.lower()
+    return any(k in low for k in _LANE_KEYWORDS)
+
+
+def plan_lanes(tasks: list[dict]) -> list[str]:
+    """The distinct cookware spots a plan uses, in first-seen order
+    (case-insensitive dedupe). These become the TUI's equipment lanes."""
+    lanes: list[str] = []
+    seen: set[str] = set()
+    for task in tasks:
+        lane = lane_for_task(task)
+        if lane and lane.lower() not in seen:
+            seen.add(lane.lower())
+            lanes.append(lane)
+    return lanes
+
+
+def progress_bar(fraction: float, width: int = 10) -> str:
+    """A block progress bar for a 0..1 fraction."""
+    fraction = max(0.0, min(1.0, fraction))
+    filled = int(round(fraction * width))
+    return "▓" * filled + "░" * (width - filled)
+
+
 # --- interactive loop (thin, not unit-tested) ---------------------------------
 
 
@@ -161,7 +208,7 @@ def _present_step(i, tasks, timers, interactive) -> None:
     if task.get("ingredients"):
         click.echo("  uses: " + ", ".join(task["ingredients"]))
     if task.get("equipment"):
-        click.echo("  equipment: " + ", ".join(task["equipment"]))
+        click.secho("  equipment: " + ", ".join(task["equipment"]), fg="blue")
     cue = preheat_cue(tasks, i)
     if cue:
         click.secho(f"  {cue}", fg="yellow")

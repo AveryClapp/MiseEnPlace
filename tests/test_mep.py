@@ -14,7 +14,7 @@ import pytest
 
 os.environ["MEP_HOME"] = tempfile.mkdtemp()
 
-from mep import adapt, cli, config, cook, db, ingest, plan, scale, shopping, web  # noqa: E402
+from mep import adapt, cli, config, cook, cookware, db, ingest, plan, scale, shopping, web  # noqa: E402
 from mep.classify import _normalize as _normalize_classification  # noqa: E402
 from mep.pairing import _normalize as _normalize_pairings  # noqa: E402
 from mep.components import _normalize_components  # noqa: E402
@@ -270,6 +270,66 @@ def test_fmt_clock(seconds, expected):
     assert cook.fmt_clock(seconds) == expected
 
 
+def test_lane_for_task_picks_vessels_not_prep_tools():
+    assert cook.lane_for_task({"equipment": ["knife", "cutting board"]}) is None
+    assert cook.lane_for_task({"equipment": ["large pot", "stove"]}) == "large pot"
+    assert cook.lane_for_task({"equipment": ["stove", "12-inch skillet"]}) == "12-inch skillet"
+    assert cook.lane_for_task({"equipment": []}) is None
+
+
+def test_plan_lanes_distinct_in_first_seen_order():
+    tasks = [
+        {"equipment": ["knife"]},
+        {"equipment": ["large pot", "stove"]},
+        {"equipment": ["oven"]},
+        {"equipment": ["Large Pot"]},  # case-insensitive duplicate of lane 1
+    ]
+    assert cook.plan_lanes(tasks) == ["large pot", "oven"]
+
+
+@pytest.mark.parametrize(
+    "frac,expected",
+    [(0, "░" * 10), (1, "▓" * 10), (0.5, "▓" * 5 + "░" * 5), (2, "▓" * 10), (-1, "░" * 10)],
+)
+def test_progress_bar(frac, expected):
+    assert cook.progress_bar(frac) == expected
+
+
+def test_tui_pilot_lanes_idle_until_started_then_count_down():
+    pytest.importorskip("textual")  # the [tui] extra; skips cleanly when absent
+    import asyncio
+    import time
+    from mep import tui
+
+    CookApp = tui._app_class()
+    recipe = {"dish_name": "Soup", "title": None}
+    tasks = [
+        {"instruction": "Dice onion", "mode": "active", "duration_minutes": 2,
+         "equipment": ["knife"], "dish": None, "overlap_hint": None,
+         "ingredients": [], "timer_label": None},
+        {"instruction": "Simmer in pot", "mode": "passive", "duration_minutes": 20,
+         "equipment": ["large pot"], "dish": None, "overlap_hint": None,
+         "ingredients": [], "timer_label": "soup"},
+    ]
+
+    async def scenario():
+        app = CookApp(recipe, tasks)
+        async with app.run_test() as pilot:
+            assert app.focus_i == 0 and app.lanes == ["large pot"]
+            # Focused step is knife prep (no lane); the pot isn't started -> idle.
+            assert "idle" in app._occupant("large pot", time.monotonic())
+            await pilot.press("enter")  # active step -> done, advance to the pot step
+            assert app.state[0] == "done" and app.focus_i == 1
+            # Now focused on the passive pot step but NOT started -> still idle
+            # (nothing is assumed to be cooking until you start it).
+            assert "idle" in app._occupant("large pot", time.monotonic())
+            await pilot.press("enter")  # start the timer in its lane
+            assert app.state[1] == "running" and app.start[1] is not None
+            assert "left" in app._occupant("large pot", time.monotonic())  # counting now
+
+    asyncio.run(scenario())
+
+
 def test_status_line():
     assert cook.status_line(40, 300, passive=True) == "remaining 4:20"
     assert cook.status_line(360, 300, passive=True) == "over by 1:00"
@@ -307,6 +367,58 @@ def test_scale_quantity(quantity, factor, expected):
 )
 def test_parse_base_servings(servings, expected):
     assert scale.parse_base_servings(servings) == expected
+
+
+@pytest.mark.parametrize(
+    "cook_time,expected",
+    [
+        ("30 minutes", 30),
+        ("30 min", 30),
+        ("45", 45),                 # a bare number means minutes
+        ("1 hour", 60),
+        ("1 hr 30 min", 90),
+        ("1h30m", 90),
+        ("1:30", 90),               # clock form
+        ("1.5 hours", 90),
+        ("30-40 minutes", 40),      # a range takes the upper bound
+        ("about 25 mins", 25),
+        ("overnight", None),        # no number -> unknown
+        ("a while", None),
+        (None, None),
+    ],
+)
+def test_parse_minutes(cook_time, expected):
+    assert scale.parse_minutes(cook_time) == expected
+
+
+def _seed_timed(conn, video_id, cook_time):
+    return db.insert_recipe(
+        conn, video_id=video_id, title="t", channel=None, url=None, raw_transcript=None,
+        extracted={"dish_name": "d", "cook_time": cook_time,
+                   "ingredients": [], "steps": ["go"], "tags": []},
+    )
+
+
+def test_discover_max_time_keeps_quick_excludes_slow_and_unknown():
+    db.init_db()
+    conn = db.connect()
+    quick = _seed_timed(conn, "qk-disc", "15 minutes")
+    slow = _seed_timed(conn, "sl-disc", "2 hours")
+    unknown = _seed_timed(conn, "un-disc", None)
+    ids = {r["id"] for r in db.discover(conn, max_time=30, count=50)}
+    assert quick in ids
+    assert slow not in ids and unknown not in ids
+
+
+def test_list_max_time_keeps_quick_excludes_slow_and_unknown():
+    db.init_db()
+    conn = db.connect()
+    quick = _seed_timed(conn, "qk-list", "20 min")
+    slow = _seed_timed(conn, "sl-list", "1 hr 30 min")
+    unknown = _seed_timed(conn, "un-list", "overnight")
+    ids = {r["id"] for r in db.list_recipes(conn, max_time=30)}
+    assert quick in ids
+    assert slow not in ids and unknown not in ids
 
 
 # --- plan normalization -------------------------------------------------------
@@ -425,6 +537,64 @@ def test_combined_gather_prefixes_each_dish():
     lines = cli._combined_gather(recipes)
     assert any(line.startswith("[Steak] ") for line in lines)
     assert any(line.startswith("[Mash] ") for line in lines)
+
+
+# --- clarify cookware in steps ------------------------------------------------
+
+
+def _recipe_data_with_steps(steps):
+    return {
+        "recipe": {"dish_name": "Soup", "title": None},
+        "ingredients": [{"name": "broth", "quantity": "4", "unit": "cups"}],
+        "steps": [{"step_number": i, "instruction": s} for i, s in enumerate(steps, 1)],
+    }
+
+
+def test_clarify_steps_rewrites_with_cookware(monkeypatch):
+    monkeypatch.setattr(
+        cookware, "complete",
+        lambda config, *, system, user, max_tokens: json.dumps(
+            {"steps": ["In a large pot, bring broth to a boil.", "Season to taste."]}
+        ),
+    )
+    out = cookware.clarify_steps(_recipe_data_with_steps(["Boil broth.", "Season."]), config={})
+    assert out[0].startswith("In a large pot")
+
+
+def test_clarify_steps_keeps_originals_on_count_mismatch(monkeypatch):
+    monkeypatch.setattr(
+        cookware, "complete",
+        lambda config, *, system, user, max_tokens: json.dumps({"steps": ["only one"]}),
+    )
+    original = ["Boil broth.", "Season."]
+    out = cookware.clarify_steps(_recipe_data_with_steps(original), config={})
+    assert out == original  # mismatch -> never drop a step
+
+
+def test_replace_steps_renumbers_and_clears_plan():
+    db.init_db()
+    conn = db.connect()
+    rid = _seed_recipe_with_step(conn, "clarify0001", "Soup")
+    db.save_plan(conn, rid, [{"instruction": "a", "duration_minutes": 1, "mode": "active"}])
+    db.replace_steps(conn, rid, ["In a large pot, simmer.", "", "Ladle into bowls."])
+    steps = db.get_recipe(conn, rid)["steps"]
+    assert [s["instruction"] for s in steps] == ["In a large pot, simmer.", "Ladle into bowls."]
+    assert [s["step_number"] for s in steps] == [1, 2]  # re-numbered, blank dropped
+    assert db.get_plan(conn, rid) == []  # stale cached plan cleared
+
+
+def test_recipe_ids_with_steps_lists_only_those_with_steps():
+    db.init_db()
+    conn = db.connect()
+    with_steps = _seed_recipe_with_step(conn, "hassteps001", "Soup")
+    stub = db.insert_recipe(
+        conn, video_id="nosteps001", title="t", channel=None, url=None,
+        raw_transcript=None,
+        extracted={"dish_name": None, "ingredients": [], "steps": [], "tags": []},
+    )
+    ids = db.recipe_ids_with_steps(conn)
+    assert with_steps in ids
+    assert stub not in ids
 
 
 # --- enriched plan storage round-trip -----------------------------------------
@@ -1046,6 +1216,9 @@ def test_gaps_cache_distinguishes_unchecked_from_clean():
 def test_normalize_classification_coerces_and_validates():
     out = _normalize_classification({"meal_type": " Dinner ", "health_score": "7"})
     assert out == {"meal_type": "dinner", "health_score": 7}
+    # 'sweets' is an accepted meal type; the old 'dessert' label is not.
+    assert _normalize_classification({"meal_type": "Sweets", "health_score": 3})["meal_type"] == "sweets"
+    assert _normalize_classification({"meal_type": "dessert", "health_score": 3})["meal_type"] is None
     # Out-of-range clamps; unknown meal type -> None; junk -> None.
     assert _normalize_classification({"meal_type": "brunch", "health_score": 99}) == {
         "meal_type": None, "health_score": 10,
@@ -1053,6 +1226,16 @@ def test_normalize_classification_coerces_and_validates():
     assert _normalize_classification({"meal_type": 5, "health_score": "x"}) == {
         "meal_type": None, "health_score": None,
     }
+
+
+def test_migrate_renames_dessert_to_sweets():
+    db.init_db()
+    conn = db.connect()
+    rid = _seed_recipe(conn, "dessertmig01")
+    db.save_classification(conn, rid, "dessert", 2)  # legacy label written directly
+    db._migrate(conn)
+    conn.commit()  # connect() commits after _migrate; mirror that here
+    assert db.get_recipe(conn, rid)["recipe"]["meal_type"] == "sweets"
 
 
 @pytest.mark.parametrize(

@@ -33,6 +33,7 @@ This creates `~/.mep/`, prompts for the keys, and builds the database at
   (https://console.anthropic.com/ → API Keys) or `OPENAI_API_KEY`. For OpenAI,
   also install the extra: `pip install 'mise-en-place[openai]'`.
 - **YouTube Data API v3 key** (only needed for `--channel` ingestion): see below.
+- **The `[tui]` extra** (only for `cook --tui`): `pip install 'mise-en-place[tui]'`.
 
 **Provider selection:** if you set only one of the two LLM keys, that provider
 is used automatically. If you set both, it defaults to Anthropic; set
@@ -94,8 +95,11 @@ mep plan 42 --servings 8                             # ...scaled to 8 servings
 mep plan 42 --with 7                                 # interleave a side into one timeline
 mep cook 42                                          # step-by-step walkthrough (experimental)
 mep cook 42 --with 7                                 # cook a main + side in one session
+mep cook 42 --tui                                    # full-screen view of every pot and pan
 
 mep show 42 --parts                                  # what each ingredient is for
+mep clarify 42                                        # name the pots/pans in the steps
+mep clarify --all                                     # ...for every recipe
 mep adapt 42                                         # rewrite around what you have (interactive)
 mep adapt 42 --have pita --sub "yogurt=sour cream"   # ...or state it directly
 mep cook 42 --have pita                              # adapt just for this cook
@@ -129,7 +133,20 @@ with its dish and the mise en place is merged. This combined plan is generated
 fresh each time (one model call, not cached), and a combined `cook` counts toward
 every dish in the session.
 
+`cook --tui` is an optional full-screen version that draws one lane per piece of
+cookware (the oven, each pot and pan) and shows what is in each and how long it
+has left. Nothing is assumed to be cooking already: a lane only starts counting
+when you start that step, and when a timer finishes it rings and holds at
+`READY` until you press `a` to acknowledge it, never advancing on its own. It
+needs the extra: `pip install 'mise-en-place[tui]'`. The plain `cook` above
+needs no extra.
+
 Both `plan` and `cook` are experimental: the timings are AI estimates.
+
+`clarify` rewrites a recipe's stored steps so each names the pot or pan it uses
+("In a large skillet, sear..."), for recipes whose source left it vague. Give it
+recipe ids or `--all` (one model call each). New recipes already get cookware
+named when first added, and `plan`/`cook` show a per-step equipment line.
 
 `show --macros` shows an estimated nutrition breakdown (calories, protein, carbs,
 fat) for the whole recipe and per serving. It's computed lazily on first request
@@ -155,11 +172,17 @@ mutual edges in a "goes well with" graph that fills in as you pair more recipes,
 and they show up automatically under "Serve with" and "Pairs with" in `mep show`.
 
 `discover` picks a random recipe from your collection, optionally filtered. Use
-`--type` (breakfast, lunch, dinner, snack, dessert), `--healthy` (health score
+`--type` (breakfast, lunch, dinner, snack, sweets), `--healthy` (health score
 >= 7) or `--indulgent` (<= 4), or `--min-health`/`--max-health` for an exact
-range, plus `-i/--ingredient` (repeatable) to require ingredients you want to
-use. `-n/--count` returns more than one; with no filters it is completely
-random. A single pick prints the full recipe; several print as a list.
+range, `-i/--ingredient` (repeatable) to require ingredients you want to use,
+and `--max-time N` for recipes that cook in N minutes or less. `-n/--count`
+returns more than one; with no filters it is completely random. A single pick
+prints the full recipe; several print as a list.
+
+`--max-time` also works on `mep list` (e.g. `mep list --max-time 30`). It reads
+each recipe's stored cook time (parsing freeform text like "1 hr 30 min" or
+"25-35 minutes", where a range uses the upper bound), so recipes with no recorded
+cook time are excluded from the results.
 
 To support that, every recipe is given a meal type and a 1-10 health score (10 =
 lean and vegetable-forward, 1 = rich and indulgent) by a small model call at
