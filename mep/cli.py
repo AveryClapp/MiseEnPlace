@@ -275,6 +275,56 @@ def _load_import_records(text: str) -> list:
     raise MepError("Expected a recipe object or a list of recipes.")
 
 
+_ICLOUD_ROOT = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+
+
+@cli.command()
+@click.argument("recipe_ids", type=int, nargs=-1, required=True)
+@click.option("--ingredients", "only_ingredients", is_flag=True, help="Only include the ingredients list.")
+@click.option("--plan", "only_plan", is_flag=True, help="Only include the step-by-step plan.")
+def send(recipe_ids, only_ingredients, only_plan):
+    """Write recipes to iCloud Drive so they appear in the Files app on your phone.
+
+    Pass --ingredients or --plan to limit what's included; both by default.
+    Files land in iCloud Drive > mep/.
+    """
+    if only_ingredients and only_plan:
+        raise click.UsageError("--ingredients and --plan are mutually exclusive.")
+    if not _ICLOUD_ROOT.exists():
+        raise MepError(
+            "iCloud Drive not found. Make sure iCloud Drive is enabled in "
+            "System Settings > Apple ID > iCloud."
+        )
+    dest = _ICLOUD_ROOT / "mep"
+    dest.mkdir(exist_ok=True)
+    conn = db.connect()
+    for rid in recipe_ids:
+        data = db.get_recipe(conn, rid)
+        if data is None:
+            raise MepError(f"No recipe with id {rid}.")
+        name = data["recipe"]["dish_name"] or data["recipe"]["title"] or f"recipe_{rid}"
+        safe = "".join(c if c.isalnum() or c in " -_" else "_" for c in name).strip()
+        filename = f"{rid}_{safe}.md"
+        (dest / filename).write_text(_to_send_markdown(data, only_ingredients, only_plan))
+        click.echo(f"  {filename}")
+    click.secho(f"Saved to iCloud Drive > mep/ ({len(recipe_ids)} file(s))", fg="green")
+
+
+def _to_send_markdown(data: dict, ingredients_only: bool, plan_only: bool) -> str:
+    r = data["recipe"]
+    title = r["dish_name"] or r["title"] or "(untitled)"
+    lines = [f"# {title}", ""]
+    if not plan_only and data["ingredients"]:
+        lines += ["## Ingredients", ""]
+        lines += [f"- {_ingredient_line(ing)}" for ing in data["ingredients"]]
+        lines.append("")
+    if not ingredients_only and data["steps"]:
+        lines += ["## Steps", ""]
+        lines += [f"{s['step_number']}. {s['instruction']}" for s in data["steps"]]
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 @cli.command()
 @click.argument("recipe_id", type=int)
 @click.option("-f", "--force", is_flag=True, help="Skip the confirmation prompt.")

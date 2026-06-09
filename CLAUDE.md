@@ -6,8 +6,9 @@ Guidance for working in this repo. Design docs live locally under `docs/plans/`
 ## What this is
 
 A single-user CLI that extracts structured recipes from YouTube videos, recipe
-web pages, and pasted text, and stores them in local SQLite at `~/.mep/mep.db`. Python + `click` + stdlib
-`sqlite3` (no ORM). No server, no web UI, no accounts.
+web pages, pasted text, and photos, and stores them in local SQLite at
+`~/.mep/mep.db`. Python + `click` + stdlib `sqlite3` (no ORM). No server, no web
+UI, no accounts.
 
 The command is `mep` (the name `mise` is taken by the unrelated jdx/mise
 tool-version manager). The Python package, config dir, and DB are all named `mep`
@@ -169,8 +170,10 @@ from `llm.py` rather than failing JSON parsing.
 ## LLM provider
 
 All model calls (extract, classify, plan, components, nutrition, gaps, shopping,
-adapt) go through `llm.complete(config, system=..., user=..., max_tokens=...)`,
-which returns text, retries transient errors, and raises on a truncated response. `config` selects the backend: `LLM_PROVIDER` is `anthropic` (default) or
+adapt, pairing, cookware/clarify) go through `llm.complete(config, system=...,
+user=..., max_tokens=...)` — image adds use `llm.complete_vision` — which returns
+text, retries transient errors, and raises on a truncated response. `config`
+selects the backend: `LLM_PROVIDER` is `anthropic` (default) or
 `openai`; `require_api_key`/`model` resolve the right key and default model
 (`claude-sonnet-4-20250514` / `gpt-4o`, overridable via `EXTRACTION_MODEL`). The
 `openai` SDK is an optional extra, imported lazily. Pass `config` to these
