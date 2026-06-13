@@ -178,14 +178,18 @@ def search(query):
 @cli.command(name="list")
 @click.option("--tag", default=None, help="Only recipes with this tag.")
 @click.option(
+    "-t", "--type", "meal_type", type=click.Choice(classify.MEAL_TYPES), default=None,
+    help="Only this meal type.",
+)
+@click.option(
     "--max-time", type=int, default=None,
     help="Only recipes that cook in this many minutes or less.",
 )
 @click.option("--limit", type=int, default=None, help="Max recipes to show.")
-def list_cmd(tag, max_time, limit):
+def list_cmd(tag, meal_type, max_time, limit):
     """Browse stored recipes, newest first."""
     conn = db.connect()
-    rows = db.list_recipes(conn, tag=tag, limit=limit, max_time=max_time)
+    rows = db.list_recipes(conn, tag=tag, meal_type=meal_type, limit=limit, max_time=max_time)
     if not rows:
         click.echo("No recipes yet. Add one with `mep add <url>`.")
         return

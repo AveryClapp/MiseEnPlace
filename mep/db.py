@@ -883,6 +883,7 @@ def discover(
 def list_recipes(
     conn: sqlite3.Connection,
     tag: str | None = None,
+    meal_type: str | None = None,
     limit: int | None = None,
     max_time: int | None = None,
 ) -> list[sqlite3.Row]:
@@ -891,9 +892,16 @@ def list_recipes(
     freeform text); ones without a parseable time are excluded."""
     params: list = []
     sql = "SELECT DISTINCT r.id, r.dish_name, r.channel, r.title, r.cook_time FROM recipes r"
+    wheres = []
     if tag:
-        sql += " JOIN tags t ON t.recipe_id = r.id WHERE t.tag = ?"
+        sql += " JOIN tags t ON t.recipe_id = r.id"
+        wheres.append("t.tag = ?")
         params.append(tag)
+    if meal_type:
+        wheres.append("r.meal_type = ?")
+        params.append(meal_type)
+    if wheres:
+        sql += " WHERE " + " AND ".join(wheres)
     sql += " ORDER BY r.created_at DESC, r.id DESC"
     if max_time is None:
         if limit:
